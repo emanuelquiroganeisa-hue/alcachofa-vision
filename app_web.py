@@ -245,7 +245,9 @@ if opcion == "🚀 Identificador":
                 Image.open(c).save(f"{SAVE_PATH_CAM}/original_{ts}.jpg", quality=95)
     
     with tab3:
-        v = st.file_uploader("Grabar o subir video...", type=["mp4", "mov", "avi"])
+        st.markdown("### 🎥 Grabadora Directa")
+        st.info("💡 **Consejo:** Si estás en un celular, este botón abrirá tu cámara para grabar en vivo.")
+        v = st.file_uploader("🔴 INICIAR GRABACIÓN / SUBIR", type=["mp4", "mov", "avi"], key="vid_ident")
         if v: vid_in = v
 
     if img_in:
@@ -261,7 +263,8 @@ if opcion == "🚀 Identificador":
                 st.download_button("💾 Descargar Resultado", buf.getvalue(), "resultado.jpg", "image/jpeg")
 
     elif vid_in:
-        st.subheader("📼 Video Detectado")
+        st.success("🎬 Video listo para análisis")
+        st.subheader("📼 Previsualización")
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         v_in_path = f"{SAVE_PATH_VID}/video_{ts}.mp4"
         v_out_path = f"{SAVE_PATH_VID_OUT}/analizado_{ts}.mp4"
@@ -308,3 +311,4 @@ elif opcion == "💾 Videos Originales":
 
 elif opcion == "🎬 Videos Analizados":
     render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
+
