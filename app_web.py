@@ -228,8 +228,9 @@ def render_historial(path, titulo, is_video=False):
 
 if opcion == "🚀 Identificador":
     st.title("🚀 Analizador de Plantaciones")
-    tab1, tab2 = st.tabs(["📁 Subir Imagen", "📷 Tomar Foto"])
+    tab1, tab2, tab3 = st.tabs(["📁 Subir Imagen", "📷 Tomar Foto", "🎥 Tomar Video"])
     img_in = None
+    vid_in = None
     
     with tab1:
         u = st.file_uploader("Subir...", type=["jpg","jpeg","png"])
@@ -242,6 +243,10 @@ if opcion == "🚀 Identificador":
             if save_local:
                 ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 Image.open(c).save(f"{SAVE_PATH_CAM}/original_{ts}.jpg", quality=95)
+    
+    with tab3:
+        v = st.file_uploader("Grabar o subir video...", type=["mp4", "mov", "avi"])
+        if v: vid_in = v
 
     if img_in:
         pil_in = Image.open(img_in).convert("RGB")
@@ -254,6 +259,24 @@ if opcion == "🚀 Identificador":
                 st.metric("Detecciones", f"{np} Plantas | {ns} Alertas")
                 buf = io.BytesIO(); res.save(buf, format="JPEG")
                 st.download_button("💾 Descargar Resultado", buf.getvalue(), "resultado.jpg", "image/jpeg")
+
+    elif vid_in:
+        st.subheader("📼 Video Detectado")
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        v_in_path = f"{SAVE_PATH_VID}/video_{ts}.mp4"
+        v_out_path = f"{SAVE_PATH_VID_OUT}/analizado_{ts}.mp4"
+        
+        with open(v_in_path, "wb") as f: f.write(vid_in.read())
+        
+        col_v1, col_v2 = st.columns(2)
+        with col_v1: st.video(v_in_path)
+        
+        if st.button("⚙️ PROCESAR VIDEO (Identificador)"):
+            process_video(v_in_path, v_out_path)
+            with col_v2:
+                st.video(v_out_path)
+                with open(v_out_path, "rb") as f:
+                    st.download_button("💾 Descargar Video Analizado", f.read(), f"analizado_{ts}.mp4", "video/mp4")
 
 elif opcion == "📹 Analizador Video":
     st.title("📹 Analizador de Video")
@@ -285,5 +308,3 @@ elif opcion == "💾 Videos Originales":
 
 elif opcion == "🎬 Videos Analizados":
     render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
-
-
