@@ -11,16 +11,25 @@ try:
 except ImportError:
     CV2_OK = False
 
+# Importes granulares para evitar que un fallo bloquee todo
+YOLO_LOADED = False
+HF_LOADED = False
+
+try:
+    from huggingface_hub import hf_hub_download
+    HF_LOADED = True
+except ImportError:
+    pass
+
 try:
     from ultralytics import YOLO
-    from huggingface_hub import hf_hub_download
     YOLO_LOADED = True
 except ImportError as e:
-    YOLO_LOADED = False
-    st.error(f"❌ Error al cargar módulos de Inteligencia Artificial: {e}")
+    st.error(f"❌ Error al cargar YOLO (módulo IA): {e}")
 
 if not CV2_OK:
     st.warning("⚠️ OpenCV (Módulos de imagen) no cargado correctamente. Se usará el modo de compatibilidad PIL.")
+
 
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -43,32 +52,46 @@ HF_REPO_ID = "Emanuel1102/alcachofa-model"
 HF_FILENAME = "best.pt"
 
 # --- CARGA DE MODELOS ---
-@st.cache_resource
-def load_models():
-    m_alc = None
+modelo_alc, modelo_seg = None, None
 
-    if os.path.exists("best.pt"):
+if YOLO_LOADED:
+    @st.cache_resource
+    def load_models():
+        m_alc = None
+
+        if os.path.exists("best.pt"):
+            try:
+                m_alc = YOLO("best.pt")
+            except Exception as e:
+                st.sidebar.warning(f"Modelo local caído: {e}")
+
+        if m_alc is None:
+            if HF_LOADED:
+                try:
+                    with st.spinner("⬇️ Descargando modelo desde Hugging Face (solo la primera vez)..."):
+                        ruta = hf_hub_download(
+                            repo_id=HF_REPO_ID,
+                            filename=HF_FILENAME,
+                            local_dir="."
+                        )
+                    m_alc = YOLO(ruta)
+                except Exception as e:
+                    st.sidebar.error(f"❌ No se pudo descargar el modelo: {e}")
+            else:
+                st.sidebar.warning("⚠️ Módulo HuggingFace no disponible para descarga automática.")
+
+
         try:
-            m_alc = YOLO("best.pt")
-        except Exception as e:
-            st.sidebar.warning(f"Modelo local caído: {e}")
+            m_seg = YOLO("yolov8n.pt")
+        except:
+            m_seg = None
+            
+        return m_alc, m_seg
 
-    if m_alc is None:
-        try:
-            with st.spinner("⬇️ Descargando modelo desde Hugging Face (solo la primera vez)..."):
-                ruta = hf_hub_download(
-                    repo_id=HF_REPO_ID,
-                    filename=HF_FILENAME,
-                    local_dir="."
-                )
-            m_alc = YOLO(ruta)
-        except Exception as e:
-            st.sidebar.error(f"❌ No se pudo descargar el modelo: {e}")
+    modelo_alc, modelo_seg = load_models()
+else:
+    st.error("⚠️ La aplicación no puede iniciar porque faltan dependencias críticas (YOLO/HuggingFace). Revisa los logs.")
 
-    m_seg = YOLO("yolov8n.pt")
-    return m_alc, m_seg
-
-modelo_alc, modelo_seg = load_models()
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -387,4 +410,3 @@ if upload_img:
 # --- PIE DE PÁGINA ---
 st.markdown("---")
 st.caption("Sistema de identificación agrícola de precisión con YOLO v8.")
-

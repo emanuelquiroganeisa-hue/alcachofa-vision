@@ -3,4 +3,4 @@ opencv-python-headless==4.8.0.74
 ultralytics
 huggingface_hub
 pillow
-numpy
+numpy<2.0.0
