@@ -28,8 +28,10 @@ HF_REPO_ID = "Emanuel1102/alcachofa-model"
 HF_FILENAME = "best.pt"
 SAVE_PATH = "resultados_servidor"
 SAVE_PATH_CAM = "camara_originales"
+SAVE_PATH_VID = "videos_originales"
+SAVE_PATH_VID_OUT = "videos_analizados"
 
-for path in [SAVE_PATH, SAVE_PATH_CAM]:
+for path in [SAVE_PATH, SAVE_PATH_CAM, SAVE_PATH_VID, SAVE_PATH_VID_OUT]:
     if not os.path.exists(path): os.makedirs(path)
 
 # --- CARGA DE MODELOS ---
@@ -52,7 +54,14 @@ modelo_alc, modelo_seg = load_models()
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/1047/1047461.png", width=80)
     st.title("🌱 Menú Principal")
-    opcion = st.radio("Ir a:", ["🚀 Identificador", "📂 Historial Analizado", "📸 Fotos de Cámara"])
+    opcion = st.radio("Ir a:", [
+        "🚀 Identificador", 
+        "📹 Analizador Video",
+        "📂 Historial Análisis", 
+        "📸 Fotos de Cámara",
+        "💾 Videos Originales",
+        "🎬 Videos Analizados"
+    ])
     
     st.divider()
     st.subheader("⚙️ Parámetros de Análisis")
@@ -94,7 +103,7 @@ def fusionar_cajas(cajas_por_clase):
         for c in lista_cajas: cajas_finales.append((cls, *c))
     return cajas_finales
 
-def main_process(imagen_pil):
+def main_process(imagen_pil, save_to_disk=False):
     img_rgb = np.array(imagen_pil.convert("RGB"))
     img_para_yolo = Image.fromarray(aplicar_clahe(img_rgb)) if use_clahe else imagen_pil
     
@@ -137,14 +146,51 @@ def main_process(imagen_pil):
 
     res_pil = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
     
-    if save_local:
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    if save_to_disk and save_local:
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         res_pil.save(f"{SAVE_PATH}/detec_{ts}.jpg", quality=95)
+        
         
     return res_pil, len(cp), len(detecciones_seg)
 
+# --- PROCESAMIENTO DE VIDEO ---
+def process_video(in_path, out_path):
+    cap = cv2.VideoCapture(in_path)
+    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps    = cap.get(cv2.CAP_PROP_FPS)
+    total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    # Intentamos MP4V, si falla el usuario verá el error o podrá descargar
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
+    
+    bar = st.progress(0, text="Procesando video...")
+    count = 0
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret: break
+        
+        # Procesar frame (se omite CLAHE en video para mayor velocidad si se desea, 
+        # pero aquí respetamos la selección del usuario)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_frame = Image.fromarray(frame_rgb)
+        res_pil, _, _ = main_process(pil_frame, save_to_disk=False)
+        
+        # Volver a BGR para OpenCV
+        res_frame = cv2.cvtColor(np.array(res_pil), cv2.COLOR_RGB2BGR)
+        out.write(res_frame)
+        
+        count += 1
+        pct = count / total
+        bar.progress(pct, text=f"Procesando: {int(pct*100)}% ({count}/{total})")
+    
+    cap.release()
+    out.release()
+    bar.success("¡Video procesado con éxito!")
+
 # --- FUNCION PARA MOSTRAR HISTORIAL GENERAL ---
-def render_historial(path, titulo):
+def render_historial(path, titulo, is_video=False):
     st.title(titulo)
     archivos = sorted(os.listdir(path), reverse=True)
     if not archivos:
@@ -158,17 +204,21 @@ def render_historial(path, titulo):
         c1, c2 = st.columns(2)
         with c1: st.download_button("📥 Descargar Todo (ZIP)", buf_zip.getvalue(), f"{path}_completo.zip", "application/zip")
         with c2: 
-            if st.button("🗑️ Borrar Todo"):
+            if st.button("🗑️ Borrar Todo", key=f"clear_{path}"):
                 for arc in archivos: os.remove(os.path.join(path, arc))
                 st.rerun()
         st.divider()
         for arc in archivos:
-            with st.expander(f"🖼️ {arc}"):
+            with st.expander(f"{'🎥' if is_video else '🖼️'} {arc}"):
                 ruta = os.path.join(path, arc)
-                col_img, col_btn = st.columns([3, 1])
-                with col_img: st.image(ruta, use_container_width=True)
+                col_media, col_btn = st.columns([3, 1])
+                with col_media: 
+                    if is_video: st.video(ruta)
+                    else: st.image(ruta, use_container_width=True)
                 with col_btn:
-                    with open(ruta, "rb") as f: st.download_button("📥 Descargar", f.read(), arc, "image/jpeg", key=f"d_{path}_{arc}")
+                    with open(ruta, "rb") as f: 
+                        tipo = "video/mp4" if is_video else "image/jpeg"
+                        st.download_button("📥 Descargar", f.read(), arc, tipo, key=f"d_{path}_{arc}")
                     if st.button("🗑️ Eliminar", key=f"del_{path}_{arc}"):
                         os.remove(ruta); st.rerun()
 
@@ -198,17 +248,42 @@ if opcion == "🚀 Identificador":
         col1, col2 = st.columns(2)
         with col1: st.image(pil_in, caption="Entrada")
         if st.button("🔍 COMENZAR ANÁLISIS"):
-            res, np, ns = main_process(pil_in)
+            res, np, ns = main_process(pil_in, save_to_disk=True)
             with col2:
                 st.image(res, caption="Resultado")
                 st.metric("Detecciones", f"{np} Plantas | {ns} Alertas")
                 buf = io.BytesIO(); res.save(buf, format="JPEG")
                 st.download_button("💾 Descargar Resultado", buf.getvalue(), "resultado.jpg", "image/jpeg")
 
-elif opcion == "📂 Historial Analizado":
-    render_historial(SAVE_PATH, "📂 Historial de Detecciones (Analizadas)")
+elif opcion == "📹 Analizador Video":
+    st.title("📹 Analizador de Video")
+    u_vid = st.file_uploader("Subir video para procesar...", type=["mp4", "mov", "avi"])
+    
+    if u_vid:
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        v_in_path = f"{SAVE_PATH_VID}/video_{ts}.mp4"
+        v_out_path = f"{SAVE_PATH_VID_OUT}/analizado_{ts}.mp4"
+        
+        with open(v_in_path, "wb") as f:
+            f.write(u_vid.read())
+            
+        st.video(v_in_path)
+        if st.button("⚙️ PROCESAR VIDEO (Frame a Frame)"):
+            process_video(v_in_path, v_out_path)
+            st.video(v_out_path)
+            with open(v_out_path, "rb") as f:
+                st.download_button("💾 Descargar Video Analizado", f.read(), f"analizado_{ts}.mp4", "video/mp4")
+
+elif opcion == "📂 Historial Análisis":
+    render_historial(SAVE_PATH, "📂 Historial de Detecciones (Imágenes)")
 
 elif opcion == "📸 Fotos de Cámara":
     render_historial(SAVE_PATH_CAM, "📸 Galería de Fotos Originales (Cámara)")
+
+elif opcion == "💾 Videos Originales":
+    render_historial(SAVE_PATH_VID, "💾 Historial de Videos Subidos", is_video=True)
+
+elif opcion == "🎬 Videos Analizados":
+    render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
 
 
