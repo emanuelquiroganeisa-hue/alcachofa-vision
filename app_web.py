@@ -1,12 +1,18 @@
 import streamlit as st
 import numpy as np
-import cv2
-from PIL import Image
+from PIL import Image, ImageDraw
 from ultralytics import YOLO
 from huggingface_hub import hf_hub_download
 import os
 import datetime
 import io
+
+try:
+    import cv2
+    CV2_OK = True
+except ImportError:
+    CV2_OK = False
+    st.warning("⚠️ OpenCV no disponible — funciones CLAHE y dibujo en modo compatibilidad.")
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -102,14 +108,33 @@ with st.sidebar:
 # UTILIDADES DE PROCESAMIENTO  (espejo exacto de interfaz_alcachofa.py)
 # ─────────────────────────────────────────────
 
-def aplicar_clahe_cv2(img_bgr: np.ndarray) -> np.ndarray:
-    """CLAHE idéntico al de la interfaz original (cv2, LAB)."""
-    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    cl = clahe.apply(l)
-    limg = cv2.merge((cl, a, b))
-    return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+def aplicar_clahe(img_rgb: np.ndarray) -> np.ndarray:
+    """
+    CLAHE sobre imagen RGB numpy.
+    - Con cv2: usa LAB + CLAHE real (idéntico a interfaz_alcachofa.py)
+    - Sin cv2: ecualización de histograma adaptativa con numpy como fallback
+    Devuelve siempre RGB numpy.
+    """
+    if CV2_OK:
+        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+        lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        cl = clahe.apply(l)
+        limg = cv2.merge((cl, a, b))
+        resultado = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+        return cv2.cvtColor(resultado, cv2.COLOR_BGR2RGB)
+    else:
+        # Fallback numpy: equalización de luminancia
+        img_f = img_rgb.astype(np.float32)
+        r, g, b = img_f[:, :, 0], img_f[:, :, 1], img_f[:, :, 2]
+        lum = 0.299 * r + 0.587 * g + 0.114 * b
+        hist, _ = np.histogram(lum.flatten(), 256, [0, 256])
+        cdf = hist.cumsum()
+        cdf_min = cdf[cdf > 0].min()
+        lut = np.round((cdf - cdf_min) / (lum.size - cdf_min) * 255).astype(np.uint8)
+        factor = np.clip(lut[lum.astype(np.uint8)] / (lum + 1e-6), 0.5, 1.8)
+        return np.clip(img_f * factor[:, :, np.newaxis], 0, 255).astype(np.uint8)
 
 
 def check_overlap(b1, b2, margin=15):
@@ -157,22 +182,32 @@ def fusionar_cajas(cajas_por_clase: dict) -> list:
     return cajas_finales
 
 
+def _rect_numpy(arr: np.ndarray, x1, y1, x2, y2, color_rgb, thick=2):
+    """Dibuja rectángulo sobre array RGB numpy sin cv2."""
+    arr[y1:y1+thick, x1:x2] = color_rgb
+    arr[y2-thick:y2, x1:x2] = color_rgb
+    arr[y1:y2, x1:x1+thick] = color_rgb
+    arr[y1:y2, x2-thick:x2] = color_rgb
+
+
+def _text_pil(draw, x, y, texto, color_rgb):
+    """Texto simple con PIL (fallback sin cv2)."""
+    from PIL import ImageDraw
+    draw.text((x, max(y - 14, 0)), texto, fill=tuple(color_rgb))
+
+
 def procesar_imagen(imagen_pil: Image.Image,
                     modelo_a, modelo_s,
                     usar_clahe: bool, usar_tta: bool,
                     conf_thr: float, iou_thr: float):
     """
     Pipeline de detección idéntico a AppDeteccion.detectar_objetos().
-    Trabaja internamente en BGR/numpy y devuelve PIL RGB.
+    Trabaja en RGB numpy internamente; soporta cv2 y fallback PIL.
     """
-    # PIL → BGR numpy (igual que cv2.imread)
     img_rgb = np.array(imagen_pil.convert("RGB"))
-    img_bgr_original = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
 
-    # 1. CLAHE
-    img_para_predecir = img_bgr_original.copy()
-    if usar_clahe:
-        img_para_predecir = aplicar_clahe_cv2(img_para_predecir)
+    # 1. CLAHE (con o sin cv2)
+    img_para_predecir = aplicar_clahe(img_rgb) if usar_clahe else img_rgb.copy()
 
     # 2. Detección alcachofa (con TTA e IoU)
     resultados = modelo_a(img_para_predecir,
@@ -203,52 +238,66 @@ def procesar_imagen(imagen_pil: Image.Image,
                 cajas_por_clase.setdefault(cls, []).append([x1, y1, x2, y2, conf])
 
     cajas_finales = fusionar_cajas(cajas_por_clase)
-
-    # Solo hojas (cls=0) y flores (cls=1) para el tinte
     cajas_planta = [c for c in cajas_finales if c[0] in [0, 1]]
 
-    # 5. Dibujar sobre la imagen ORIGINAL (no la de CLAHE)
-    img_dibujo = img_bgr_original.copy()
+    # 5. Dibujar sobre imagen ORIGINAL en RGB
+    img_dibujo = img_rgb.copy()
 
-    # Máscara: 255 = maleza (teñir azul), 0 = zona protegida
+    # Máscara maleza: 255=teñir azul, 0=protegido
     mask_maleza = np.ones(img_dibujo.shape[:2], dtype=np.uint8) * 255
-
     for cls, x1, y1, x2, y2, conf in cajas_planta:
-        cv2.rectangle(mask_maleza, (x1, y1), (x2, y2), 0, -1)
-
+        mask_maleza[y1:y2, x1:x2] = 0
     for x1, y1, x2, y2, cls, conf in detecciones_seguridad:
-        cv2.rectangle(mask_maleza, (x1, y1), (x2, y2), 0, -1)  # ← no azul en personas
+        mask_maleza[y1:y2, x1:x2] = 0  # personas no se tiñen
 
-    # Tinte azul a maleza
+    # Tinte azul a maleza (RGB: 0, 0, 255)
     capa_azul = np.zeros_like(img_dibujo)
-    capa_azul[:] = (255, 0, 0)  # BGR azul
-    img_tinte = cv2.addWeighted(img_dibujo, 0.6, capa_azul, 0.4, 0)
+    capa_azul[:] = (0, 0, 255)  # RGB azul
+    img_tinte = np.clip(img_dibujo * 0.6 + capa_azul * 0.4, 0, 255).astype(np.uint8)
     indices_maleza = mask_maleza == 255
     img_dibujo[indices_maleza] = img_tinte[indices_maleza]
 
-    # 6. Cajas de planta (rojo)
-    for cls, x1, y1, x2, y2, conf in cajas_planta:
-        color_bgr = (0, 0, 255)
-        texto = "Flor" if cls == 1 else "Hojas"
-        cv2.rectangle(img_dibujo, (x1, y1), (x2, y2), color_bgr, 2)
-        cv2.putText(img_dibujo, f"{texto} {conf:.2f}",
-                    (x1, max(y1 - 5, 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_bgr, 2)
+    if CV2_OK:
+        # — Dibujo con cv2 (calidad idéntica al original, texto antialiased) —
+        for cls, x1, y1, x2, y2, conf in cajas_planta:
+            color = (255, 50, 50)  # RGB rojo
+            texto = "Flor" if cls == 1 else "Hojas"
+            img_dibujo_bgr = cv2.cvtColor(img_dibujo, cv2.COLOR_RGB2BGR)
+            cv2.rectangle(img_dibujo_bgr, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            cv2.putText(img_dibujo_bgr, f"{texto} {conf:.2f}",
+                        (x1, max(y1 - 5, 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            img_dibujo = cv2.cvtColor(img_dibujo_bgr, cv2.COLOR_BGR2RGB)
 
-    # 7. Cajas de seguridad (naranja) — SIN tinte azul
-    nombres_seg = {0: "Persona", 39: "Botella/Basura"}
-    for x1, y1, x2, y2, cls, conf in detecciones_seguridad:
-        color_sec = (0, 140, 255)  # Naranja BGR
-        label = nombres_seg.get(cls, "Intruso/Animal")
-        cv2.rectangle(img_dibujo, (x1, y1), (x2, y2), color_sec, 3)
-        cv2.putText(img_dibujo, f"{label} {conf:.2f}",
-                    (x1, max(y1 - 10, 20)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_sec, 2)
+        nombres_seg = {0: "Persona", 39: "Botella/Basura"}
+        for x1, y1, x2, y2, cls, conf in detecciones_seguridad:
+            label = nombres_seg.get(cls, "Intruso/Animal")
+            img_dibujo_bgr = cv2.cvtColor(img_dibujo, cv2.COLOR_RGB2BGR)
+            cv2.rectangle(img_dibujo_bgr, (x1, y1), (x2, y2), (0, 140, 255), 3)
+            cv2.putText(img_dibujo_bgr, f"{label} {conf:.2f}",
+                        (x1, max(y1 - 10, 20)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
+            img_dibujo = cv2.cvtColor(img_dibujo_bgr, cv2.COLOR_BGR2RGB)
+    else:
+        # — Fallback PIL sin cv2 —
+        img_pil_draw = Image.fromarray(img_dibujo)
+        draw = ImageDraw.Draw(img_pil_draw)
+        nombres_seg = {0: "Persona", 39: "Botella/Basura"}
+        for cls, x1, y1, x2, y2, conf in cajas_planta:
+            texto = "Flor" if cls == 1 else "Hojas"
+            draw.rectangle([x1, y1, x2, y2], outline=(255, 50, 50), width=2)
+            lbl = f"{texto} {conf:.2f}"
+            draw.rectangle([x1, max(y1 - 18, 0), x1 + len(lbl) * 7, y1], fill=(255, 50, 50))
+            draw.text((x1 + 2, max(y1 - 17, 0)), lbl, fill=(255, 255, 255))
+        for x1, y1, x2, y2, cls, conf in detecciones_seguridad:
+            label = nombres_seg.get(cls, "Intruso/Animal")
+            draw.rectangle([x1, y1, x2, y2], outline=(255, 140, 0), width=3)
+            lbl = f"{label} {conf:.2f}"
+            draw.rectangle([x1, max(y1 - 18, 0), x1 + len(lbl) * 7, y1], fill=(255, 140, 0))
+            draw.text((x1 + 2, max(y1 - 17, 0)), lbl, fill=(255, 255, 255))
+        img_dibujo = np.array(img_pil_draw)
 
-    # BGR → RGB → PIL
-    img_resultado_rgb = cv2.cvtColor(img_dibujo, cv2.COLOR_BGR2RGB)
-    return (Image.fromarray(img_resultado_rgb),
-            cajas_planta, detecciones_seguridad)
+    return (Image.fromarray(img_dibujo), cajas_planta, detecciones_seguridad)
 
 
 # ─────────────────────────────────────────────
@@ -321,6 +370,4 @@ if upload_img:
 # --- PIE DE PÁGINA ---
 st.markdown("---")
 st.caption("Sistema de identificación agrícola de precisión con YOLO v8.")
-
-
 
