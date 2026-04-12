@@ -1,18 +1,27 @@
 import streamlit as st
 import numpy as np
-from PIL import Image, ImageDraw
-from ultralytics import YOLO
-from huggingface_hub import hf_hub_download
 import os
 import datetime
 import io
+from PIL import Image, ImageDraw
 
 try:
     import cv2
     CV2_OK = True
 except ImportError:
     CV2_OK = False
-    st.warning("⚠️ OpenCV no disponible — funciones CLAHE y dibujo en modo compatibilidad.")
+
+try:
+    from ultralytics import YOLO
+    from huggingface_hub import hf_hub_download
+    YOLO_LOADED = True
+except ImportError as e:
+    YOLO_LOADED = False
+    st.error(f"❌ Error al cargar módulos de Inteligencia Artificial: {e}")
+
+if not CV2_OK:
+    st.warning("⚠️ OpenCV (Módulos de imagen) no cargado correctamente. Se usará el modo de compatibilidad PIL.")
+
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
