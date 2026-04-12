@@ -99,7 +99,9 @@ def main_process(imagen_pil):
     img_para_yolo = Image.fromarray(aplicar_clahe(img_rgb)) if use_clahe else imagen_pil
     
     res_a = modelo_alc(img_para_yolo, augment=use_tta, conf=conf_val, iou=iou_val, imgsz=800)
-    res_s = modelo_seg(img_para_yolo, conf=0.35, classes=[0, 39])
+    # Clases COCO: 0:Persona, 15:Gato, 16:Perro, 17:Caballo, 18:Oveja, 19:Vaca, 39:Botella(Basura)
+    nombres_extra = {0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca", 39: "Basura"}
+    res_s = modelo_seg(img_para_yolo, conf=0.35, classes=list(nombres_extra.keys()))
 
     detecciones_seg = []
     for r in res_s:
@@ -130,7 +132,8 @@ def main_process(imagen_pil):
         cv2.putText(img_bgr, f"{'Flor' if c[0]==1 else 'Hojas'} {c[5]:.2f}", (int(c[1]), max(int(c[2])-5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
     for s in detecciones_seg:
         cv2.rectangle(img_bgr, (s[0], s[1]), (s[2], s[3]), (0, 140, 255), 3)
-        cv2.putText(img_bgr, f"{'Persona' if s[4]==0 else 'Basura'} {s[5]:.2f}", (s[0], max(s[1]-10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,140,255), 2)
+        label_extra = nombres_extra.get(s[4], "Alerta")
+        cv2.putText(img_bgr, f"{label_extra} {s[5]:.2f}", (s[0], max(s[1]-10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
 
     res_pil = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
     
@@ -207,6 +210,5 @@ elif opcion == "📂 Historial Analizado":
 
 elif opcion == "📸 Fotos de Cámara":
     render_historial(SAVE_PATH_CAM, "📸 Galería de Fotos Originales (Cámara)")
-
 
 
