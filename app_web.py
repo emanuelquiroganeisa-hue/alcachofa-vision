@@ -10,7 +10,6 @@ import io
 import zipfile
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-
 st.set_page_config(
     page_title="Alcachofa Vision",
     page_icon="🌱",
@@ -28,7 +27,10 @@ st.markdown("""
 HF_REPO_ID = "Emanuel1102/alcachofa-model"
 HF_FILENAME = "best.pt"
 SAVE_PATH = "resultados_servidor"
-if not os.path.exists(SAVE_PATH): os.makedirs(SAVE_PATH)
+SAVE_PATH_CAM = "camara_originales"
+
+for path in [SAVE_PATH, SAVE_PATH_CAM]:
+    if not os.path.exists(path): os.makedirs(path)
 
 # --- CARGA DE MODELOS ---
 @st.cache_resource
@@ -50,7 +52,7 @@ modelo_alc, modelo_seg = load_models()
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/1047/1047461.png", width=80)
     st.title("🌱 Menú Principal")
-    opcion = st.radio("Ir a:", ["🚀 Identificador", "📂 Historial de Guardados"])
+    opcion = st.radio("Ir a:", ["🚀 Identificador", "📂 Historial Analizado", "📸 Fotos de Cámara"])
     
     st.divider()
     st.subheader("⚙️ Parámetros de Análisis")
@@ -60,7 +62,7 @@ with st.sidebar:
     iou_val   = st.slider("Solapado", 0.01, 1.0, 0.45, step=0.01)
 
     st.divider()
-    save_local = st.checkbox("💾 Guardar automáticamente en servidor", value=True)
+    save_local = st.checkbox("💾 Guardar auto. en servidor", value=True)
 
 
 # ─────────────────────────────────────────────
@@ -97,7 +99,7 @@ def main_process(imagen_pil):
     img_para_yolo = Image.fromarray(aplicar_clahe(img_rgb)) if use_clahe else imagen_pil
     
     res_a = modelo_alc(img_para_yolo, augment=use_tta, conf=conf_val, iou=iou_val, imgsz=800)
-    res_s = modelo_seg(img_para_yolo, conf=0.35, classes=[0, 39]) # Simplificado para seguridad
+    res_s = modelo_seg(img_para_yolo, conf=0.35, classes=[0, 39])
 
     detecciones_seg = []
     for r in res_s:
@@ -138,78 +140,73 @@ def main_process(imagen_pil):
         
     return res_pil, len(cp), len(detecciones_seg)
 
+# --- FUNCION PARA MOSTRAR HISTORIAL GENERAL ---
+def render_historial(path, titulo):
+    st.title(titulo)
+    archivos = sorted(os.listdir(path), reverse=True)
+    if not archivos:
+        st.info("No hay archivos en esta sección.")
+    else:
+        st.write(f"Total: **{len(archivos)}** archivos.")
+        buf_zip = io.BytesIO()
+        with zipfile.ZipFile(buf_zip, "w") as zf:
+            for arc in archivos: zf.write(os.path.join(path, arc), arc)
+        
+        c1, c2 = st.columns(2)
+        with c1: st.download_button("📥 Descargar Todo (ZIP)", buf_zip.getvalue(), f"{path}_completo.zip", "application/zip")
+        with c2: 
+            if st.button("🗑️ Borrar Todo"):
+                for arc in archivos: os.remove(os.path.join(path, arc))
+                st.rerun()
+        st.divider()
+        for arc in archivos:
+            with st.expander(f"🖼️ {arc}"):
+                ruta = os.path.join(path, arc)
+                col_img, col_btn = st.columns([3, 1])
+                with col_img: st.image(ruta, use_container_width=True)
+                with col_btn:
+                    with open(ruta, "rb") as f: st.download_button("📥 Descargar", f.read(), arc, "image/jpeg", key=f"d_{path}_{arc}")
+                    if st.button("🗑️ Eliminar", key=f"del_{path}_{arc}"):
+                        os.remove(ruta); st.rerun()
+
 # ─────────────────────────────────────────────
-# VISTAS
+# VISTAS PRINCIPALES
 # ─────────────────────────────────────────────
 
 if opcion == "🚀 Identificador":
     st.title("🚀 Analizador de Plantaciones")
-    tab1, tab2 = st.tabs(["📁 Subir", "📷 Cámara"])
+    tab1, tab2 = st.tabs(["📁 Subir Imagen", "📷 Tomar Foto"])
     img_in = None
+    
     with tab1:
-        u = st.file_uploader("Imagen...", type=["jpg","jpeg","png"])
+        u = st.file_uploader("Subir...", type=["jpg","jpeg","png"])
         if u: img_in = u
     with tab2:
-        c = st.camera_input("Foto...")
-        if c: img_in = c
-    
+        c = st.camera_input("Capturar...")
+        if c: 
+            img_in = c
+            # Guardamos la original inmediatamente si es de cámara
+            if save_local:
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                Image.open(c).save(f"{SAVE_PATH_CAM}/original_{ts}.jpg", quality=95)
+
     if img_in:
         pil_in = Image.open(img_in).convert("RGB")
         col1, col2 = st.columns(2)
-        with col1: st.image(pil_in, caption="Original")
+        with col1: st.image(pil_in, caption="Entrada")
         if st.button("🔍 COMENZAR ANÁLISIS"):
             res, np, ns = main_process(pil_in)
             with col2:
-                st.image(res, caption="Analizado")
+                st.image(res, caption="Resultado")
                 st.metric("Detecciones", f"{np} Plantas | {ns} Alertas")
                 buf = io.BytesIO(); res.save(buf, format="JPEG")
-                st.download_button("💾 Descargar", buf.getvalue(), "resultado.jpg", "image/jpeg")
+                st.download_button("💾 Descargar Resultado", buf.getvalue(), "resultado.jpg", "image/jpeg")
 
-elif opcion == "📂 Historial de Guardados":
-    st.title("📂 Historial de Detecciones en el Servidor")
-    archivos = sorted(os.listdir(SAVE_PATH), reverse=True)
-    
-    if not archivos:
-        st.info("Aún no hay imágenes guardadas en el servidor.")
-    else:
-        st.write(f"Se han encontrado **{len(archivos)}** capturas guardadas.")
-        
-        # Botón para descargar masivamente
-        buf_zip = io.BytesIO()
-        with zipfile.ZipFile(buf_zip, "w") as zf:
-            for arc in archivos:
-                ruta = os.path.join(SAVE_PATH, arc)
-                zf.write(ruta, arc)
-        
-        col_acc1, col_acc2 = st.columns(2)
-        with col_acc1:
-            st.download_button(
-                label="📥 Descargar TODAS como ZIP",
-                data=buf_zip.getvalue(),
-                file_name=f"historial_completo_{datetime.datetime.now().strftime('%Y%m%d')}.zip",
-                mime="application/zip",
-                use_container_width=True
-            )
-        with col_acc2:
-            if st.button("🗑️ Borrar Todo el Historial", use_container_width=True):
-                for arc in archivos: os.remove(os.path.join(SAVE_PATH, arc))
-                st.rerun()
+elif opcion == "📂 Historial Analizado":
+    render_historial(SAVE_PATH, "📂 Historial de Detecciones (Analizadas)")
 
-        st.divider()
-        # Mostrar galería individual
-        for arc in archivos:
-            with st.expander(f"🖼️ {arc}"):
+elif opcion == "📸 Fotos de Cámara":
+    render_historial(SAVE_PATH_CAM, "📸 Galería de Fotos Originales (Cámara)")
 
-                col_img, col_info = st.columns([3, 1])
-                ruta = os.path.join(SAVE_PATH, arc)
-                with col_img:
-                    st.image(ruta, use_container_width=True)
-                with col_info:
-                    st.write(f"**Fecha:** {arc.split('_')[1]}")
-                    with open(ruta, "rb") as f:
-                        st.download_button(f"📥 Descargar", f.read(), arc, "image/jpeg", key=arc)
-                    if st.button(f"🗑️ Eliminar", key=f"del_{arc}"):
-                        os.remove(ruta)
-                        st.rerun()
 
 
