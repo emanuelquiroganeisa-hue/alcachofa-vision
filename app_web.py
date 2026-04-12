@@ -7,8 +7,10 @@ from huggingface_hub import hf_hub_download
 import os
 import datetime
 import io
+import zipfile
 
 # --- CONFIGURACIÓN DE PÁGINA ---
+
 st.set_page_config(
     page_title="Alcachofa Vision",
     page_icon="🌱",
@@ -171,8 +173,33 @@ elif opcion == "📂 Historial de Guardados":
         st.info("Aún no hay imágenes guardadas en el servidor.")
     else:
         st.write(f"Se han encontrado **{len(archivos)}** capturas guardadas.")
+        
+        # Botón para descargar masivamente
+        buf_zip = io.BytesIO()
+        with zipfile.ZipFile(buf_zip, "w") as zf:
+            for arc in archivos:
+                ruta = os.path.join(SAVE_PATH, arc)
+                zf.write(ruta, arc)
+        
+        col_acc1, col_acc2 = st.columns(2)
+        with col_acc1:
+            st.download_button(
+                label="📥 Descargar TODAS como ZIP",
+                data=buf_zip.getvalue(),
+                file_name=f"historial_completo_{datetime.datetime.now().strftime('%Y%m%d')}.zip",
+                mime="application/zip",
+                use_container_width=True
+            )
+        with col_acc2:
+            if st.button("🗑️ Borrar Todo el Historial", use_container_width=True):
+                for arc in archivos: os.remove(os.path.join(SAVE_PATH, arc))
+                st.rerun()
+
+        st.divider()
+        # Mostrar galería individual
         for arc in archivos:
             with st.expander(f"🖼️ {arc}"):
+
                 col_img, col_info = st.columns([3, 1])
                 ruta = os.path.join(SAVE_PATH, arc)
                 with col_img:
@@ -184,6 +211,5 @@ elif opcion == "📂 Historial de Guardados":
                     if st.button(f"🗑️ Eliminar", key=f"del_{arc}"):
                         os.remove(ruta)
                         st.rerun()
-
 
 
