@@ -202,15 +202,23 @@ def procesar_imagen(imagen_pil: Image.Image,
                     conf_thr: float, iou_thr: float):
     """
     Pipeline de detección idéntico a AppDeteccion.detectar_objetos().
-    Trabaja en RGB numpy internamente; soporta cv2 y fallback PIL.
+    YOLO recibe PIL (RGB) para evitar confusión de canales BGR/RGB.
+    El dibujo final se hace en numpy RGB.
     """
     img_rgb = np.array(imagen_pil.convert("RGB"))
 
-    # 1. CLAHE (con o sin cv2)
-    img_para_predecir = aplicar_clahe(img_rgb) if usar_clahe else img_rgb.copy()
+    # 1. CLAHE → resultado como PIL (RGB) para pasárselo a YOLO correctamente
+    if usar_clahe:
+        img_clahe_rgb = aplicar_clahe(img_rgb)   # devuelve RGB numpy
+        img_para_yolo = Image.fromarray(img_clahe_rgb)  # PIL RGB ✓
+    else:
+        img_para_yolo = imagen_pil.convert("RGB")       # PIL RGB ✓
+
+    # YOLO acepta PIL images en RGB sin problema (internamente convierte).
+    # NO pasar numpy BGR aquí porque en el fallback sin cv2 sería RGB mal interpretado.
 
     # 2. Detección alcachofa (con TTA e IoU)
-    resultados = modelo_a(img_para_predecir,
+    resultados = modelo_a(img_para_yolo,
                           augment=usar_tta,
                           conf=conf_thr,
                           iou=iou_thr,
@@ -218,7 +226,7 @@ def procesar_imagen(imagen_pil: Image.Image,
 
     # 3. Detección seguridad — mismas clases que interfaz original
     clases_seg = [0, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 39]
-    res_sec = modelo_s(img_para_predecir, conf=0.35, classes=clases_seg)
+    res_sec = modelo_s(img_para_yolo, conf=0.35, classes=clases_seg)
     detecciones_seguridad = []
     for r in res_sec:
         for box in r.boxes:
@@ -240,44 +248,44 @@ def procesar_imagen(imagen_pil: Image.Image,
     cajas_finales = fusionar_cajas(cajas_por_clase)
     cajas_planta = [c for c in cajas_finales if c[0] in [0, 1]]
 
-    # 5. Dibujar sobre imagen ORIGINAL en RGB
-    img_dibujo = img_rgb.copy()
+    # 5. Dibujar sobre imagen ORIGINAL (no sobre la de CLAHE)
+    img_dibujo = img_rgb.copy()  # RGB numpy
 
     # Máscara maleza: 255=teñir azul, 0=protegido
     mask_maleza = np.ones(img_dibujo.shape[:2], dtype=np.uint8) * 255
     for cls, x1, y1, x2, y2, conf in cajas_planta:
         mask_maleza[y1:y2, x1:x2] = 0
     for x1, y1, x2, y2, cls, conf in detecciones_seguridad:
-        mask_maleza[y1:y2, x1:x2] = 0  # personas no se tiñen
+        mask_maleza[y1:y2, x1:x2] = 0  # personas NO se tiñen de azul
 
     # Tinte azul a maleza (RGB: 0, 0, 255)
     capa_azul = np.zeros_like(img_dibujo)
-    capa_azul[:] = (0, 0, 255)  # RGB azul
+    capa_azul[:] = (0, 0, 255)
     img_tinte = np.clip(img_dibujo * 0.6 + capa_azul * 0.4, 0, 255).astype(np.uint8)
-    indices_maleza = mask_maleza == 255
-    img_dibujo[indices_maleza] = img_tinte[indices_maleza]
+    img_dibujo[mask_maleza == 255] = img_tinte[mask_maleza == 255]
 
     if CV2_OK:
-        # — Dibujo con cv2 (calidad idéntica al original, texto antialiased) —
+        # Una sola conversión RGB→BGR, dibujar todo, luego BGR→RGB
+        img_dibujo_bgr = cv2.cvtColor(img_dibujo, cv2.COLOR_RGB2BGR)
+
+        # Cajas de planta (rojo en BGR = 0,0,255)
         for cls, x1, y1, x2, y2, conf in cajas_planta:
-            color = (255, 50, 50)  # RGB rojo
             texto = "Flor" if cls == 1 else "Hojas"
-            img_dibujo_bgr = cv2.cvtColor(img_dibujo, cv2.COLOR_RGB2BGR)
             cv2.rectangle(img_dibujo_bgr, (x1, y1), (x2, y2), (0, 0, 255), 2)
             cv2.putText(img_dibujo_bgr, f"{texto} {conf:.2f}",
                         (x1, max(y1 - 5, 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-            img_dibujo = cv2.cvtColor(img_dibujo_bgr, cv2.COLOR_BGR2RGB)
 
+        # Cajas de seguridad (naranja en BGR = 0,140,255)
         nombres_seg = {0: "Persona", 39: "Botella/Basura"}
         for x1, y1, x2, y2, cls, conf in detecciones_seguridad:
             label = nombres_seg.get(cls, "Intruso/Animal")
-            img_dibujo_bgr = cv2.cvtColor(img_dibujo, cv2.COLOR_RGB2BGR)
             cv2.rectangle(img_dibujo_bgr, (x1, y1), (x2, y2), (0, 140, 255), 3)
             cv2.putText(img_dibujo_bgr, f"{label} {conf:.2f}",
                         (x1, max(y1 - 10, 20)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
-            img_dibujo = cv2.cvtColor(img_dibujo_bgr, cv2.COLOR_BGR2RGB)
+
+        img_dibujo = cv2.cvtColor(img_dibujo_bgr, cv2.COLOR_BGR2RGB)
     else:
         # — Fallback PIL sin cv2 —
         img_pil_draw = Image.fromarray(img_dibujo)
