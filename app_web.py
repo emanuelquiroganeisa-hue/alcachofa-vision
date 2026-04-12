@@ -172,14 +172,47 @@ def main_process(imagen_pil):
 
 # --- INTERFAZ ---
 st.title("🌱 Alcachofa Vision (Espejo Local)")
-upload = st.file_uploader("Selecciona una Imagen o Toma una Foto", type=["jpg", "png", "jpeg"])
-if upload:
-    img_pil = Image.open(upload).convert("RGB")
+st.write("Sube una imagen o usa la cámara de tu dispositivo para identificar alcachofas y malezas.")
+
+tab1, tab2 = st.tabs(["📁 Subir Imagen", "📷 Usar Cámara"])
+upload_img = None
+
+with tab1:
+    up = st.file_uploader("Selecciona una imagen...", type=["jpg", "png", "jpeg"])
+    if up: upload_img = up
+
+with tab2:
+    cam = st.camera_input("Captura una foto desde tu dispositivo")
+    if cam: upload_img = cam
+
+if upload_img:
+    img_pil = Image.open(upload_img).convert("RGB")
     col1, col2 = st.columns(2)
-    with col1: st.image(img_pil, use_container_width=True, caption="Original")
+    with col1: 
+        st.subheader("📸 Imagen de Entrada")
+        st.image(img_pil, use_container_width=True)
+    
     if st.button("🚀 INICIAR IDENTIFICACIÓN"):
-        with st.spinner("Procesando..."):
+        with st.spinner("🔍 Analizando con YOLOv8..."):
             res_img, n_plant, n_seg = main_process(img_pil)
+        
         with col2:
-            st.image(res_img, use_container_width=True, caption="Análisis Resultante")
-            st.metric("Detecciones", f"{n_plant} Plantas | {n_seg} Alertas de Seguridad")
+            st.subheader("✅ Resultado del Análisis")
+            st.image(res_img, use_container_width=True)
+            
+            # Métricas
+            m1, m2 = st.columns(2)
+            m1.metric("🍃 Plantas Detectadas", n_plant)
+            m2.metric("⚠️ Alertas Seguridad", n_seg)
+            
+            # Botón de descarga para el resultado
+            buf = io.BytesIO()
+            res_img.save(buf, format="JPEG", quality=95)
+            st.download_button(
+                label="💾 Descargar Resultado",
+                data=buf.getvalue(),
+                file_name=f"deteccion_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
+                mime="image/jpeg"
+            )
+
+
