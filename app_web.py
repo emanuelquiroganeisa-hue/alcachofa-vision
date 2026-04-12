@@ -215,4 +215,11 @@ if upload_img:
                 mime="image/jpeg"
             )
 
+            # Guardar en el servidor si la opción está activa
+            if save_local:
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                save_filename = os.path.join(SAVE_PATH, f"detec_{timestamp}.jpg")
+                res_img.save(save_filename, quality=95)
+                st.sidebar.success(f"💾 Guardado en servidor: {save_filename}")
+
 
