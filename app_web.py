@@ -1,6 +1,7 @@
 import streamlit as st
 import numpy as np
-from PIL import Image, ImageDraw
+import cv2
+from PIL import Image
 from ultralytics import YOLO
 from huggingface_hub import hf_hub_download
 import os
@@ -23,11 +24,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# =====================================================================
-# IMPORTANTE: Reemplaza "TU_USUARIO" con tu usuario real de Hugging Face
-# Ejemplo: si tu usuario es "emanuelquiroga", queda:
-#   repo_id="emanuelquiroga/alcachofa-model"
-# =====================================================================
 HF_REPO_ID = "Emanuel1102/alcachofa-model"
 HF_FILENAME = "best.pt"
 
@@ -36,14 +32,12 @@ HF_FILENAME = "best.pt"
 def load_models():
     m_alc = None
 
-    # Si ya fue descargado antes en esta sesión, usarlo directamente
     if os.path.exists("best.pt"):
         try:
             m_alc = YOLO("best.pt")
         except Exception as e:
             st.sidebar.warning(f"Modelo local caído: {e}")
 
-    # Si no existe, descargar desde Hugging Face
     if m_alc is None:
         try:
             with st.spinner("⬇️ Descargando modelo desde Hugging Face (solo la primera vez)..."):
@@ -56,9 +50,7 @@ def load_models():
         except Exception as e:
             st.sidebar.error(f"❌ No se pudo descargar el modelo: {e}")
 
-    # Modelo de seguridad (personas/basura) - se descarga automáticamente
     m_seg = YOLO("yolov8n.pt")
-
     return m_alc, m_seg
 
 modelo_alc, modelo_seg = load_models()
@@ -82,8 +74,10 @@ with st.sidebar:
 
     st.divider()
     st.subheader("⚙️ Parámetros")
-    conf_val = st.slider("Confianza Mínima", 0.01, 1.0, 0.25)
-    use_clahe = st.checkbox("Filtro CLAHE (Mejora de Luz)", value=True)
+    use_clahe = st.checkbox("Filtro CLAHE (Iluminación)", value=True)
+    use_tta   = st.checkbox("Usar TTA (Mayor Precisión)", value=True)
+    conf_val  = st.slider("Confianza (Mínima)",       0.01, 1.0, 0.25, step=0.01)
+    iou_val   = st.slider("Sensibilidad (Solapado)",  0.01, 1.0, 0.45, step=0.01)
 
     st.divider()
     st.subheader("💾 Resultados")
@@ -92,80 +86,174 @@ with st.sidebar:
     if not os.path.exists(SAVE_PATH):
         os.makedirs(SAVE_PATH)
 
-    # Mostrar archivos guardados
     if save_local and os.path.exists(SAVE_PATH):
         archivos = os.listdir(SAVE_PATH)
         if archivos:
             st.caption(f"📂 {len(archivos)} archivo(s) guardado(s) en el servidor")
 
-
-# --- FUNCIÓN DE MEJORA CLAHE (sin cv2) ---
-def aplicar_clahe_pil(imagen_pil):
-    """Mejora de contraste adaptativo usando solo PIL y numpy."""
-    img_array = np.array(imagen_pil).astype(np.float32)
-    # Convertir a LAB manualmente (aproximación con numpy)
-    r, g, b = img_array[:,:,0], img_array[:,:,1], img_array[:,:,2]
-    luminancia = 0.299*r + 0.587*g + 0.114*b
-    # Ecualización por histograma simple
-    hist, bins = np.histogram(luminancia.flatten(), 256, [0, 256])
-    cdf = hist.cumsum()
-    cdf_min = cdf[cdf > 0].min()
-    total_pixels = luminancia.size
-    lut = np.round((cdf - cdf_min) / (total_pixels - cdf_min) * 255).astype(np.uint8)
-    factor = np.clip(lut[luminancia.astype(np.uint8)] / (luminancia + 1e-6), 0.5, 1.8)
-    img_mejorada = np.clip(img_array * factor[:,:,np.newaxis], 0, 255).astype(np.uint8)
-    return Image.fromarray(img_mejorada)
+    st.divider()
+    st.subheader("🎨 Leyenda")
+    st.markdown("🟥 &nbsp; Flor / Hojas (Cajas)", unsafe_allow_html=True)
+    st.markdown("🟦 &nbsp; Maleza (Áreas Azules)", unsafe_allow_html=True)
+    st.markdown("🟧 &nbsp; Seguridad (Naranja)", unsafe_allow_html=True)
 
 
-# --- FUNCIÓN DE DIBUJO (Solo PIL, sin cv2) ---
-def dibujar_resultado(imagen_pil, resultados_alc, resultados_seg):
-    """Dibuja detecciones y tinte de maleza usando solo PIL."""
-    img = imagen_pil.convert("RGB")
+# ─────────────────────────────────────────────
+# UTILIDADES DE PROCESAMIENTO  (espejo exacto de interfaz_alcachofa.py)
+# ─────────────────────────────────────────────
 
-    # 1. Tinte Azul para Maleza (todo excepto las cajas de planta)
-    capa_azul = Image.new("RGB", img.size, (30, 100, 255))
-    mask = Image.new("L", img.size, 255)  # 255 = maleza (teñir)
-    draw_mask = ImageDraw.Draw(mask)
-
-    for r in resultados_alc:
-        for b in r.boxes:
-            x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
-            draw_mask.rectangle([x1, y1, x2, y2], fill=0)  # 0 = planta (no teñir)
-
-    img_resultado = Image.composite(
-        Image.blend(img, capa_azul, 0.4),
-        img,
-        mask
-    )
-
-    # 2. Dibujar cajas de Planta (Rojo)
-    draw = ImageDraw.Draw(img_resultado)
-    for r in resultados_alc:
-        for b in r.boxes:
-            x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
-            conf = float(b.conf[0])
-            cls = int(b.cls[0])
-            label = f"{'Flor' if cls == 1 else 'Hojas'} {conf:.2f}"
-            draw.rectangle([x1, y1, x2, y2], outline=(255, 50, 50), width=3)
-            draw.rectangle([x1, max(y1 - 20, 0), x1 + len(label) * 8, y1], fill=(255, 50, 50))
-            draw.text((x1 + 2, max(y1 - 18, 0)), label, fill=(255, 255, 255))
-
-    # 3. Dibujar cajas de Seguridad (Naranja)
-    labels_coco = {0: "Persona", 39: "Basura"}
-    for r in resultados_seg:
-        for b in r.boxes:
-            x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
-            conf = float(b.conf[0])
-            cls = int(b.cls[0])
-            label = f"{labels_coco.get(cls, 'Intruso')} {conf:.2f}"
-            draw.rectangle([x1, y1, x2, y2], outline=(255, 140, 0), width=3)
-            draw.rectangle([x1, max(y1 - 20, 0), x1 + len(label) * 8, y1], fill=(255, 140, 0))
-            draw.text((x1 + 2, max(y1 - 18, 0)), label, fill=(255, 255, 255))
-
-    return img_resultado
+def aplicar_clahe_cv2(img_bgr: np.ndarray) -> np.ndarray:
+    """CLAHE idéntico al de la interfaz original (cv2, LAB)."""
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    cl = clahe.apply(l)
+    limg = cv2.merge((cl, a, b))
+    return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
 
 
-# --- INTERFAZ PRINCIPAL ---
+def check_overlap(b1, b2, margin=15):
+    """Igual que en interfaz_alcachofa.py."""
+    return not (b1[2] + margin < b2[0] or
+                b1[0] - margin > b2[2] or
+                b1[3] + margin < b2[1] or
+                b1[1] - margin > b2[3])
+
+
+def fusionar_cajas(cajas_por_clase: dict) -> list:
+    """
+    Fusiona cajas solapadas dentro de cada clase.
+    Algoritmo idéntico al de interfaz_alcachofa.py.
+    Devuelve [(cls, x1, y1, x2, y2, conf), ...]
+    """
+    cajas_finales = []
+    for cls, lista_cajas in cajas_por_clase.items():
+        cambio = True
+        while cambio:
+            cambio = False
+            nuevas_cajas = []
+            while lista_cajas:
+                caja = lista_cajas.pop(0)
+                merged = False
+                for i in range(len(lista_cajas)):
+                    otra = lista_cajas[i]
+                    if check_overlap(caja, otra):
+                        nx1 = min(caja[0], otra[0])
+                        ny1 = min(caja[1], otra[1])
+                        nx2 = max(caja[2], otra[2])
+                        ny2 = max(caja[3], otra[3])
+                        nconf = max(caja[4], otra[4])
+                        lista_cajas[i] = [nx1, ny1, nx2, ny2, nconf]
+                        merged = True
+                        cambio = True
+                        break
+                if not merged:
+                    nuevas_cajas.append(caja)
+            lista_cajas = nuevas_cajas
+
+        for cx1, cy1, cx2, cy2, cconf in lista_cajas:
+            cajas_finales.append((cls, cx1, cy1, cx2, cy2, cconf))
+
+    return cajas_finales
+
+
+def procesar_imagen(imagen_pil: Image.Image,
+                    modelo_a, modelo_s,
+                    usar_clahe: bool, usar_tta: bool,
+                    conf_thr: float, iou_thr: float):
+    """
+    Pipeline de detección idéntico a AppDeteccion.detectar_objetos().
+    Trabaja internamente en BGR/numpy y devuelve PIL RGB.
+    """
+    # PIL → BGR numpy (igual que cv2.imread)
+    img_rgb = np.array(imagen_pil.convert("RGB"))
+    img_bgr_original = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+
+    # 1. CLAHE
+    img_para_predecir = img_bgr_original.copy()
+    if usar_clahe:
+        img_para_predecir = aplicar_clahe_cv2(img_para_predecir)
+
+    # 2. Detección alcachofa (con TTA e IoU)
+    resultados = modelo_a(img_para_predecir,
+                          augment=usar_tta,
+                          conf=conf_thr,
+                          iou=iou_thr,
+                          imgsz=800)
+
+    # 3. Detección seguridad — mismas clases que interfaz original
+    clases_seg = [0, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 39]
+    res_sec = modelo_s(img_para_predecir, conf=0.35, classes=clases_seg)
+    detecciones_seguridad = []
+    for r in res_sec:
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            detecciones_seguridad.append(
+                [x1, y1, x2, y2, int(box.cls[0]), float(box.conf[0])]
+            )
+
+    # 4. Agrupar por clase y fusionar solapadas (merge algorithm)
+    cajas_por_clase: dict = {}
+    for resultado in resultados:
+        if resultado.boxes is not None:
+            for caja in resultado.boxes:
+                x1, y1, x2, y2 = map(int, caja.xyxy[0])
+                cls = int(caja.cls[0])
+                conf = float(caja.conf[0])
+                cajas_por_clase.setdefault(cls, []).append([x1, y1, x2, y2, conf])
+
+    cajas_finales = fusionar_cajas(cajas_por_clase)
+
+    # Solo hojas (cls=0) y flores (cls=1) para el tinte
+    cajas_planta = [c for c in cajas_finales if c[0] in [0, 1]]
+
+    # 5. Dibujar sobre la imagen ORIGINAL (no la de CLAHE)
+    img_dibujo = img_bgr_original.copy()
+
+    # Máscara: 255 = maleza (teñir azul), 0 = zona protegida
+    mask_maleza = np.ones(img_dibujo.shape[:2], dtype=np.uint8) * 255
+
+    for cls, x1, y1, x2, y2, conf in cajas_planta:
+        cv2.rectangle(mask_maleza, (x1, y1), (x2, y2), 0, -1)
+
+    for x1, y1, x2, y2, cls, conf in detecciones_seguridad:
+        cv2.rectangle(mask_maleza, (x1, y1), (x2, y2), 0, -1)  # ← no azul en personas
+
+    # Tinte azul a maleza
+    capa_azul = np.zeros_like(img_dibujo)
+    capa_azul[:] = (255, 0, 0)  # BGR azul
+    img_tinte = cv2.addWeighted(img_dibujo, 0.6, capa_azul, 0.4, 0)
+    indices_maleza = mask_maleza == 255
+    img_dibujo[indices_maleza] = img_tinte[indices_maleza]
+
+    # 6. Cajas de planta (rojo)
+    for cls, x1, y1, x2, y2, conf in cajas_planta:
+        color_bgr = (0, 0, 255)
+        texto = "Flor" if cls == 1 else "Hojas"
+        cv2.rectangle(img_dibujo, (x1, y1), (x2, y2), color_bgr, 2)
+        cv2.putText(img_dibujo, f"{texto} {conf:.2f}",
+                    (x1, max(y1 - 5, 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_bgr, 2)
+
+    # 7. Cajas de seguridad (naranja) — SIN tinte azul
+    nombres_seg = {0: "Persona", 39: "Botella/Basura"}
+    for x1, y1, x2, y2, cls, conf in detecciones_seguridad:
+        color_sec = (0, 140, 255)  # Naranja BGR
+        label = nombres_seg.get(cls, "Intruso/Animal")
+        cv2.rectangle(img_dibujo, (x1, y1), (x2, y2), color_sec, 3)
+        cv2.putText(img_dibujo, f"{label} {conf:.2f}",
+                    (x1, max(y1 - 10, 20)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_sec, 2)
+
+    # BGR → RGB → PIL
+    img_resultado_rgb = cv2.cvtColor(img_dibujo, cv2.COLOR_BGR2RGB)
+    return (Image.fromarray(img_resultado_rgb),
+            cajas_planta, detecciones_seguridad)
+
+
+# ─────────────────────────────────────────────
+# INTERFAZ PRINCIPAL
+# ─────────────────────────────────────────────
 st.title("🌱 Identificador de Alcachofas y Maleza")
 st.write("Sube una imagen desde tu galería o toma una foto directamente con tu celular.")
 
@@ -193,33 +281,28 @@ if upload_img:
             st.error("❌ Modelo no disponible. Sube el archivo .pt en el panel lateral.")
         else:
             with st.spinner("🔍 Analizando con YOLO v8..."):
+                img_resultado, cajas_planta, detecciones_seg = procesar_imagen(
+                    imagen_pil,
+                    modelo_alc, modelo_seg,
+                    usar_clahe=use_clahe,
+                    usar_tta=use_tta,
+                    conf_thr=conf_val,
+                    iou_thr=iou_val
+                )
 
-                # Aplicar CLAHE si está activado
-                img_para_analizar = aplicar_clahe_pil(imagen_pil) if use_clahe else imagen_pil
-
-                # Predicciones
-                res_alc = modelo_alc(img_para_analizar, conf=conf_val)
-                res_seg = modelo_seg(img_para_analizar, conf=0.35, classes=[0, 39])
-
-                # Dibujar resultado
-                img_resultado = dibujar_resultado(imagen_pil, res_alc, res_seg)
-
-                # Conteo de detecciones
-                n_hojas = sum(1 for r in res_alc for b in r.boxes if int(b.cls[0]) == 0)
-                n_flores = sum(1 for r in res_alc for b in r.boxes if int(b.cls[0]) == 1)
-                n_seg = sum(len(r.boxes) for r in res_seg)
+                n_hojas  = sum(1 for c in cajas_planta if c[0] == 0)
+                n_flores = sum(1 for c in cajas_planta if c[0] == 1)
+                n_seg    = len(detecciones_seg)
 
                 with col2:
                     st.subheader("✅ Resultado del Análisis")
                     st.image(img_resultado, use_container_width=True)
 
-                    # Métricas
                     m1, m2, m3 = st.columns(3)
-                    m1.metric("🍃 Hojas", n_hojas)
-                    m2.metric("🌸 Flores", n_flores)
+                    m1.metric("🍃 Hojas",    n_hojas)
+                    m2.metric("🌸 Flores",   n_flores)
                     m3.metric("⚠️ Alertas", n_seg)
 
-                    # Botón de descarga
                     buf = io.BytesIO()
                     img_resultado.save(buf, format="JPEG", quality=95)
                     st.download_button(
@@ -229,7 +312,6 @@ if upload_img:
                         "image/jpeg"
                     )
 
-                # Guardar en servidor automáticamente
                 if save_local:
                     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                     fname = os.path.join(SAVE_PATH, f"detec_{ts}.jpg")
@@ -238,10 +320,7 @@ if upload_img:
 
 # --- PIE DE PÁGINA ---
 st.markdown("---")
-col_a, col_b, col_c = st.columns(3)
-col_a.markdown("**Leyenda:**")
-col_b.markdown("🟥 Flor / Hojas detectadas")
-col_c.markdown("🟦 Área de Maleza")
 st.caption("Sistema de identificación agrícola de precisión con YOLO v8.")
+
 
 
