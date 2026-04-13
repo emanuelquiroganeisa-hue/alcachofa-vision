@@ -300,7 +300,7 @@ if opcion == "🚀 Identificador":
         st.session_state.vid_file = None
         st.rerun()
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📁 Subir Imagen", "📷 Tomar Foto", "🎥 Tomar Video", "⚡ Análisis en Vivo"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📁 Subir Imagen", "📷 Tomar Foto", "📁 Cargar Video", "⚡ Análisis en Vivo"])
     
     with tab1:
         u = st.file_uploader("Seleccionar imagen...", type=["jpg","jpeg","png"], key="uploader_img")
@@ -319,9 +319,9 @@ if opcion == "🚀 Identificador":
                 Image.open(c).save(f"{SAVE_PATH_CAM}/original_{ts}.jpg", quality=95)
     
     with tab3:
-        st.markdown("### 🎥 Grabadora Directa")
-        st.info("💡 **Consejo:** En celulares, pulsa el botón y elige 'Cámara' (Video). Al terminar, espera a que la barra azul de carga llegue al 100%.")
-        v = st.file_uploader("🔴 GRABAR / SUBIR VIDEO", type=["mp4", "mov", "avi"], key="recorder_vid")
+        st.markdown("### 📁 Analizador de Archivos de Video")
+        st.info("📂 Selecciona un video de tu galería o archivos para procesar el análisis completo frame a frame.")
+        v = st.file_uploader("Subir video para análisis...", type=["mp4", "mov", "avi"], key="uploader_vid_file")
         if v: 
             st.session_state.vid_file = v
             st.session_state.img_file = None
