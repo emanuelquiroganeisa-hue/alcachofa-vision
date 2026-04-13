@@ -317,7 +317,15 @@ if opcion == "🚀 Identificador":
         st.markdown("### ⚡ Identificación en Tiempo Real")
         st.warning("⚠️ El análisis en vivo consume más CPU. Úsalo en un área con buena iluminación.")
         
-        rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+        rtc_config = RTCConfiguration(
+            {"iceServers": [
+                {"urls": ["stun:stun.l.google.com:19302"]},
+                {"urls": ["stun:stun1.l.google.com:19302"]},
+                {"urls": ["stun:stun2.l.google.com:19302"]},
+                {"urls": ["stun:stun3.l.google.com:19302"]},
+                {"urls": ["stun:stun4.l.google.com:19302"]},
+            ]}
+        )
         
         webrtc_streamer(
             key="live-detection",
@@ -380,4 +388,3 @@ elif opcion == "💾 Videos Originales":
 
 elif opcion == "🎬 Videos Analizados":
     render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
-
