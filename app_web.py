@@ -226,19 +226,31 @@ def render_historial(path, titulo, is_video=False):
 # VISTAS PRINCIPALES
 # ─────────────────────────────────────────────
 
+if "img_file" not in st.session_state: st.session_state.img_file = None
+if "vid_file" not in st.session_state: st.session_state.vid_file = None
+
 if opcion == "🚀 Identificador":
     st.title("🚀 Analizador de Plantaciones")
+    
+    # Botón para limpiar todo
+    if st.button("🚿 Limpiar Selección"):
+        st.session_state.img_file = None
+        st.session_state.vid_file = None
+        st.rerun()
+
     tab1, tab2, tab3 = st.tabs(["📁 Subir Imagen", "📷 Tomar Foto", "🎥 Tomar Video"])
-    img_in = None
-    vid_in = None
     
     with tab1:
-        u = st.file_uploader("Subir...", type=["jpg","jpeg","png"])
-        if u: img_in = u
+        u = st.file_uploader("Seleccionar imagen...", type=["jpg","jpeg","png"], key="uploader_img")
+        if u: 
+            st.session_state.img_file = u
+            st.session_state.vid_file = None # Priorizar imagen si se sube
+
     with tab2:
-        c = st.camera_input("Capturar...")
+        c = st.camera_input("Capturar foto...", key="cam_img")
         if c: 
-            img_in = c
+            st.session_state.img_file = c
+            st.session_state.vid_file = None
             # Guardamos la original inmediatamente si es de cámara
             if save_local:
                 ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -246,9 +258,14 @@ if opcion == "🚀 Identificador":
     
     with tab3:
         st.markdown("### 🎥 Grabadora Directa")
-        st.info("💡 **Consejo:** Si estás en un celular, este botón abrirá tu cámara para grabar en vivo.")
-        v = st.file_uploader("🔴 INICIAR GRABACIÓN / SUBIR", type=["mp4", "mov", "avi"], key="vid_ident")
-        if v: vid_in = v
+        st.info("💡 **Consejo:** En celulares, pulsa el botón y elige 'Cámara' (Video). Al terminar, espera a que la barra azul de carga llegue al 100%.")
+        v = st.file_uploader("🔴 GRABAR / SUBIR VIDEO", type=["mp4", "mov", "avi"], key="recorder_vid")
+        if v: 
+            st.session_state.vid_file = v
+            st.session_state.img_file = None
+
+    img_in = st.session_state.img_file
+    vid_in = st.session_state.vid_file
 
     if img_in:
         pil_in = Image.open(img_in).convert("RGB")
@@ -311,4 +328,5 @@ elif opcion == "💾 Videos Originales":
 
 elif opcion == "🎬 Videos Analizados":
     render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
+
 
