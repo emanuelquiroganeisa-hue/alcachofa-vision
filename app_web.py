@@ -8,6 +8,8 @@ import os
 import datetime
 import io
 import zipfile
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+import av
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -152,6 +154,43 @@ def main_process(imagen_pil, save_to_disk=False):
         
     return res_pil, len(cp), len(detecciones_seg)
 
+# --- CALLBACK PARA VIDEO EN VIVO ---
+def video_frame_callback(frame):
+    img = frame.to_ndarray(format="bgr24")
+    
+    # Redimensionar para velocidad si es necesario
+    img_h, img_w = img.shape[:2]
+    
+    # Procesar con YOLO (usamos confianza mayor para evitar ruido en vivo)
+    # Convertimos a PIL para usar la lógica compartida o procesamos directo
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    
+    # Detecciones rápidas (sin TTA ni CLAHE para mantener FPS)
+    res_a = modelo_alc(img_rgb, conf=0.3, iou=0.45, imgsz=640, verbose=False)
+    res_s = modelo_seg(img_rgb, conf=0.4, classes=[0, 15, 16, 17, 18, 19, 39], verbose=False)
+
+    # Dibujar resultados (Simplificado para vivo)
+    # Alcachofa
+    for r in res_a:
+        for b in r.boxes:
+            x1, y1, x2, y2 = map(int, b.xyxy[0])
+            cls = int(b.cls[0])
+            label = "Flor" if cls == 1 else "Hojas"
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            cv2.putText(img, f"{label}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+
+    # Persona/Animales/Basura
+    nombres_extra = {0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca", 39: "Basura"}
+    for r in res_s:
+        for b in r.boxes:
+            x1, y1, x2, y2 = map(int, b.xyxy[0])
+            cls = int(b.cls[0])
+            label = nombres_extra.get(cls, "Alerta")
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 140, 255), 3)
+            cv2.putText(img, f"{label}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
+
+    return av.VideoFrame.from_ndarray(img, format="bgr24")
+
 # --- PROCESAMIENTO DE VIDEO ---
 def process_video(in_path, out_path):
     cap = cv2.VideoCapture(in_path)
@@ -237,7 +276,7 @@ if opcion == "🚀 Identificador":
         st.session_state.vid_file = None
         st.rerun()
 
-    tab1, tab2, tab3 = st.tabs(["📁 Subir Imagen", "📷 Tomar Foto", "🎥 Tomar Video"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📁 Subir Imagen", "📷 Tomar Foto", "🎥 Tomar Video", "⚡ Análisis en Vivo"])
     
     with tab1:
         u = st.file_uploader("Seleccionar imagen...", type=["jpg","jpeg","png"], key="uploader_img")
@@ -262,6 +301,21 @@ if opcion == "🚀 Identificador":
         if v: 
             st.session_state.vid_file = v
             st.session_state.img_file = None
+
+    with tab4:
+        st.markdown("### ⚡ Identificación en Tiempo Real")
+        st.warning("⚠️ El análisis en vivo consume más CPU. Úsalo en un área con buena iluminación.")
+        
+        rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+        
+        webrtc_streamer(
+            key="live-detection",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=rtc_config,
+            video_frame_callback=video_frame_callback,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
 
     img_in = st.session_state.img_file
     vid_in = st.session_state.vid_file
