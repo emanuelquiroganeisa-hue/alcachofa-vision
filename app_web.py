@@ -10,6 +10,7 @@ import io
 import zipfile
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import av
+import threading
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -155,54 +156,61 @@ def main_process(imagen_pil, save_to_disk=False):
     return res_pil, len(cp), len(detecciones_seg)
 
 # --- CALLBACK PARA VIDEO EN VIVO ---
-# Variables para control de frames
 last_frame_processed = {"img": None, "count": 0}
+res_lock = threading.Lock()
+shared_res = {"a": [], "s": []}
+
+def run_inference_alc(img_rgb):
+    res = modelo_alc(img_rgb, conf=0.35, iou=0.45, imgsz=384, verbose=False)
+    with res_lock: shared_res["a"] = res
+
+def run_inference_seg(img_rgb):
+    res = modelo_seg(img_rgb, conf=0.5, classes=[0, 15, 16, 17, 18, 19, 39], imgsz=384, verbose=False)
+    with res_lock: shared_res["s"] = res
 
 def video_frame_callback(frame):
     last_frame_processed["count"] += 1
     
-    # Solo procesar 1 de cada 5 frames para máxima fluidez
-    if last_frame_processed["count"] % 5 != 0 and last_frame_processed["img"] is not None:
-        return av.VideoFrame.from_ndarray(last_frame_processed["img"], format="bgr24")
+    # Procesamos 1 de cada 3 frames para balancear fluidez y calidad
+    process_this_frame = (last_frame_processed["count"] % 3 == 0)
 
     img = frame.to_ndarray(format="bgr24")
-    
-    # Redimensionar para análisis ULTRA-RÁPIDO (256px)
     h, w = img.shape[:2]
-    img_small = cv2.resize(img, (256, int(256 * h / w)))
-    img_rgb = cv2.cvtColor(img_small, cv2.COLOR_BGR2RGB)
     
-    # Detecciones optimizadas (imgsz=256)
-    res_a = modelo_alc(img_rgb, conf=0.35, iou=0.45, imgsz=256, verbose=False)
-    
-    # Intercalamos el modelo de segmentos para ahorrar CPU
-    # Solo buscamos personas/animales en frames pares de los procesados
-    res_s = []
-    if last_frame_processed["count"] % 10 == 0:
-        res_s = modelo_seg(img_rgb, conf=0.5, classes=[0, 15, 16, 17, 18, 19, 39], imgsz=256, verbose=False)
+    if process_this_frame:
+        # Preparamos imagen optimizada para la IA (384px es un gran balance)
+        img_small = cv2.resize(img, (384, int(384 * h / w)))
+        img_rgb = cv2.cvtColor(img_small, cv2.COLOR_BGR2RGB)
+        
+        # Ejecutamos ambos modelos en PARALELO para ganar velocidad
+        t1 = threading.Thread(target=run_inference_alc, args=(img_rgb,))
+        t2 = threading.Thread(target=run_inference_seg, args=(img_rgb,))
+        t1.start(); t2.start()
+        t1.join(); t2.join()
 
     # Reescalar coordenadas
-    scale_x = w / 256
-    scale_y = h / (256 * h / w)
+    scale_x = w / 384
+    scale_y = h / (384 * h / w)
 
-    # Dibujar (Alcachofa)
-    for r in res_a:
-        for b in r.boxes:
-            x1, y1, x2, y2 = map(int, b.xyxy[0])
-            lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
-            cls = int(b.cls[0]); label = "Flor" if cls == 1 else "Hojas"
-            cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 0, 255), 2)
-            cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
+    with res_lock:
+        # Dibujar (Alcachofa)
+        for r in shared_res["a"]:
+            for b in r.boxes:
+                x1, y1, x2, y2 = map(int, b.xyxy[0])
+                lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
+                cls = int(b.cls[0]); label = "Flor" if cls == 1 else "Hojas"
+                cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 0, 255), 2)
+                cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
 
-    # Dibujar (Extras)
-    nombres_extra = {0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca", 39: "Basura"}
-    for r in res_s:
-        for b in r.boxes:
-            x1, y1, x2, y2 = map(int, b.xyxy[0])
-            lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
-            label = nombres_extra.get(int(b.cls[0]), "Alerta")
-            cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 140, 255), 2)
-            cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,140,255), 2)
+        # Dibujar (Extras)
+        nombres_extra = {0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca", 39: "Basura"}
+        for r in shared_res["s"]:
+            for b in r.boxes:
+                x1, y1, x2, y2 = map(int, b.xyxy[0])
+                lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
+                label = nombres_extra.get(int(b.cls[0]), "Alerta")
+                cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 140, 255), 2)
+                cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,140,255), 2)
 
     last_frame_processed["img"] = img
     return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -339,10 +347,10 @@ if opcion == "🚀 Identificador":
             video_frame_callback=video_frame_callback,
             media_stream_constraints={
                 "video": {
-                    "width": {"ideal": 320}, 
-                    "height": {"ideal": 240},
+                    "width": {"ideal": 640}, 
+                    "height": {"ideal": 480},
                     "facingMode": "environment",
-                    "frameRate": {"ideal": 15} # Limitar FPS de entrada
+                    "frameRate": {"ideal": 20}
                 }, 
                 "audio": False
             },
@@ -394,3 +402,4 @@ elif opcion == "💾 Videos Originales":
 
 elif opcion == "🎬 Videos Analizados":
     render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
+
