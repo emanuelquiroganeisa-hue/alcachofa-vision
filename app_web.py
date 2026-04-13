@@ -336,7 +336,7 @@ if opcion == "🚀 Identificador":
                 "video": {
                     "width": {"ideal": 480}, 
                     "height": {"ideal": 360},
-                    "facingMode": {"exact": "environment"} # Forzar estrictamente la cámara trasera
+                    "facingMode": "environment" # Cámara trasera preferida
                 }, 
                 "audio": False
             },
