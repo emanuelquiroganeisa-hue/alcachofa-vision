@@ -56,7 +56,6 @@ with st.sidebar:
     st.title("🌱 Menú Principal")
     opcion = st.radio("Ir a:", [
         "🚀 Identificador", 
-        "📹 Analizador Video",
         "📂 Historial Análisis", 
         "📸 Fotos de Cámara",
         "💾 Videos Originales",
@@ -298,25 +297,6 @@ if opcion == "🚀 Identificador":
                 with open(v_out_path, "rb") as f:
                     st.download_button("💾 Descargar Video Analizado", f.read(), f"analizado_{ts}.mp4", "video/mp4")
 
-elif opcion == "📹 Analizador Video":
-    st.title("📹 Analizador de Video")
-    u_vid = st.file_uploader("Subir video para procesar...", type=["mp4", "mov", "avi"])
-    
-    if u_vid:
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        v_in_path = f"{SAVE_PATH_VID}/video_{ts}.mp4"
-        v_out_path = f"{SAVE_PATH_VID_OUT}/analizado_{ts}.mp4"
-        
-        with open(v_in_path, "wb") as f:
-            f.write(u_vid.read())
-            
-        st.video(v_in_path)
-        if st.button("⚙️ PROCESAR VIDEO (Frame a Frame)"):
-            process_video(v_in_path, v_out_path)
-            st.video(v_out_path)
-            with open(v_out_path, "rb") as f:
-                st.download_button("💾 Descargar Video Analizado", f.read(), f"analizado_{ts}.mp4", "video/mp4")
-
 elif opcion == "📂 Historial Análisis":
     render_historial(SAVE_PATH, "📂 Historial de Detecciones (Imágenes)")
 
@@ -328,5 +308,4 @@ elif opcion == "💾 Videos Originales":
 
 elif opcion == "🎬 Videos Analizados":
     render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
-
 
