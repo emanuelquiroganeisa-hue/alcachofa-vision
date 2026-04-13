@@ -215,41 +215,54 @@ def video_frame_callback(frame):
     last_frame_processed["img"] = img
     return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- PROCESAMIENTO DE VIDEO ---
+# --- PROCESAMIENTO DE VIDEO (Mejorado para web) ---
 def process_video(in_path, out_path):
-    cap = cv2.VideoCapture(in_path)
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps    = cap.get(cv2.CAP_PROP_FPS)
-    total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    # Intentamos MP4V, si falla el usuario verá el error o podrá descargar
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
-    
-    bar = st.progress(0, text="Procesando video...")
-    count = 0
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret: break
+    try:
+        input_container = av.open(in_path)
+        output_container = av.open(out_path, mode='w', format='mp4')
         
-        # Procesar frame (se omite CLAHE en video para mayor velocidad si se desea, 
-        # pero aquí respetamos la selección del usuario)
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        pil_frame = Image.fromarray(frame_rgb)
-        res_pil, _, _ = main_process(pil_frame, save_to_disk=False)
+        # Obtener stream original
+        in_stream = input_container.streams.video[0]
+        fps = in_stream.average_rate
+        total_frames = in_stream.frames
         
-        # Volver a BGR para OpenCV
-        res_frame = cv2.cvtColor(np.array(res_pil), cv2.COLOR_RGB2BGR)
-        out.write(res_frame)
+        # Configurar stream de salida (H.264)
+        out_stream = output_container.add_stream('libx264', rate=fps)
+        out_stream.width = in_stream.width
+        out_stream.height = in_stream.height
+        out_stream.pix_fmt = 'yuv420p' # Estándar para web/móvil
         
-        count += 1
-        pct = count / total
-        bar.progress(pct, text=f"Procesando: {int(pct*100)}% ({count}/{total})")
-    
-    cap.release()
-    out.release()
-    bar.success("¡Video procesado con éxito!")
+        bar = st.progress(0, text="Procesando video con alta compatibilidad...")
+        count = 0
+        
+        for frame in input_container.decode(video=0):
+            # 1. Convertir frame a imagen PIL
+            img_pil = frame.to_image()
+            
+            # 2. Analizar con nuestra lógica principal
+            res_pil, _, _ = main_process(img_pil, save_to_disk=False)
+            
+            # 3. Codificar de vuelta al video
+            new_frame = av.VideoFrame.from_image(res_pil)
+            for packet in out_stream.encode(new_frame):
+                output_container.mux(packet)
+            
+            count += 1
+            if total_frames > 0:
+                pct = min(count / total_frames, 1.0)
+                bar.progress(pct, text=f"Analizando: {int(pct*100)}% ({count}/{total_frames})")
+        
+        # Finalizar codificación
+        for packet in out_stream.encode():
+            output_container.mux(packet)
+        
+        input_container.close()
+        output_container.close()
+        bar.success("¡Video analizado y codificado correctamente!")
+        
+    except Exception as e:
+        st.error(f"Error procesando video: {str(e)}")
+        if 'output_container' in locals(): output_container.close()
 
 # --- FUNCION PARA MOSTRAR HISTORIAL GENERAL ---
 def render_historial(path, titulo, is_video=False):
@@ -402,4 +415,5 @@ elif opcion == "💾 Videos Originales":
 
 elif opcion == "🎬 Videos Analizados":
     render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
+
 
