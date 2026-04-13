@@ -161,24 +161,29 @@ last_frame_processed = {"img": None, "count": 0}
 def video_frame_callback(frame):
     last_frame_processed["count"] += 1
     
-    # Solo procesar 1 de cada 3 frames para evitar LAG y timeout en celular
-    if last_frame_processed["count"] % 3 != 0 and last_frame_processed["img"] is not None:
+    # Solo procesar 1 de cada 5 frames para máxima fluidez
+    if last_frame_processed["count"] % 5 != 0 and last_frame_processed["img"] is not None:
         return av.VideoFrame.from_ndarray(last_frame_processed["img"], format="bgr24")
 
     img = frame.to_ndarray(format="bgr24")
     
-    # Redimensionar para análisis ultra-rápido (320px)
+    # Redimensionar para análisis ULTRA-RÁPIDO (256px)
     h, w = img.shape[:2]
-    img_small = cv2.resize(img, (320, int(320 * h / w)))
+    img_small = cv2.resize(img, (256, int(256 * h / w)))
     img_rgb = cv2.cvtColor(img_small, cv2.COLOR_BGR2RGB)
     
-    # Detecciones rápidas con resolución mínima
-    res_a = modelo_alc(img_rgb, conf=0.35, iou=0.45, imgsz=320, verbose=False)
-    res_s = modelo_seg(img_rgb, conf=0.45, classes=[0, 15, 16, 17, 18, 19, 39], imgsz=320, verbose=False)
+    # Detecciones optimizadas (imgsz=256)
+    res_a = modelo_alc(img_rgb, conf=0.35, iou=0.45, imgsz=256, verbose=False)
+    
+    # Intercalamos el modelo de segmentos para ahorrar CPU
+    # Solo buscamos personas/animales en frames pares de los procesados
+    res_s = []
+    if last_frame_processed["count"] % 10 == 0:
+        res_s = modelo_seg(img_rgb, conf=0.5, classes=[0, 15, 16, 17, 18, 19, 39], imgsz=256, verbose=False)
 
-    # Reescalar coordenadas de vuelta a la imagen original
-    scale_x = w / 320
-    scale_y = h / (320 * h / w)
+    # Reescalar coordenadas
+    scale_x = w / 256
+    scale_y = h / (256 * h / w)
 
     # Dibujar (Alcachofa)
     for r in res_a:
@@ -334,9 +339,10 @@ if opcion == "🚀 Identificador":
             video_frame_callback=video_frame_callback,
             media_stream_constraints={
                 "video": {
-                    "width": {"ideal": 480}, 
-                    "height": {"ideal": 360},
-                    "facingMode": "environment" # Cámara trasera preferida
+                    "width": {"ideal": 320}, 
+                    "height": {"ideal": 240},
+                    "facingMode": "environment",
+                    "frameRate": {"ideal": 15} # Limitar FPS de entrada
                 }, 
                 "audio": False
             },
