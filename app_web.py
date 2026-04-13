@@ -69,7 +69,6 @@ with st.sidebar:
     st.subheader("⚙️ Parámetros de Análisis")
     use_clahe = st.checkbox("Filtro CLAHE (Luz)", value=True)
     use_tta   = st.checkbox("Usar TTA (Precisión)", value=True)
-    fast_video = st.checkbox("🔥 Video Turbo (Doble velocidad)", value=True)
     conf_val  = st.slider("Confianza", 0.01, 1.0, 0.25, step=0.01)
     iou_val   = st.slider("Solapado", 0.01, 1.0, 0.45, step=0.01)
 
@@ -216,110 +215,45 @@ def video_frame_callback(frame):
     last_frame_processed["img"] = img
     return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- PROCESAMIENTO DE VIDEO (Mejorado para web) ---
+# --- PROCESAMIENTO DE VIDEO (Estable para web) ---
 def process_video(in_path, out_path):
     try:
         input_container = av.open(in_path)
         output_container = av.open(out_path, mode='w', format='mp4')
         
-        # Obtener stream original
         in_stream = input_container.streams.video[0]
         fps = in_stream.average_rate
         total_frames = in_stream.frames
         
-        # Configurar stream de salida (H.264) con preset de alta velocidad
         out_stream = output_container.add_stream('libx264', rate=fps)
         out_stream.width = in_stream.width
         out_stream.height = in_stream.height
         out_stream.pix_fmt = 'yuv420p'
-        out_stream.options = {'preset': 'ultrafast', 'crf': '28'} # Turbo encoding
         
-        bar = st.progress(0, text="Procesando con motor de ALTA PRECISIÓN (Batch Inference)...")
+        bar = st.progress(0, text="Analizando video...")
         count = 0
         
-        # Parámetros de calidad máximos
-        inf_size = 384
-        batch_size = 8 # Procesamos de 8 en 8 para máxima velocidad
-        frame_buffer = []
-        original_frames = []
-
         for frame in input_container.decode(video=0):
-            # 1. Capturar frame
+            # 1. Analizar imagen original (Preservando calidad)
             img_pil = frame.to_image()
-            original_frames.append(img_pil)
+            res_pil, _, _ = main_process(img_pil, save_to_disk=False)
             
-            # Preparar imagen escalada para la IA
-            img_rgb = np.array(img_pil.convert("RGB"))
-            img_small = cv2.resize(img_rgb, (inf_size, int(inf_size * in_stream.height / in_stream.width)))
-            frame_buffer.append(img_small)
+            # 2. Codificar de vuelta
+            new_frame = av.VideoFrame.from_image(res_pil)
+            for packet in out_stream.encode(new_frame):
+                output_container.mux(packet)
             
-            # 2. Cuando el buffer está lleno, procesar en lote (BATCH)
-            if len(frame_buffer) == batch_size:
-                # Inferencia en lote: esto es MUCHO más rápido que uno por uno
-                results_alc = modelo_alc(frame_buffer, imgsz=inf_size, conf=conf_val, iou=iou_val, verbose=False)
-                results_seg = modelo_seg(frame_buffer, imgsz=inf_size, conf=conf_val, classes=[0, 15, 16, 17, 18, 19, 39], verbose=False)
-                
-                # Relación de escala
-                scale_x = in_stream.width / inf_size
-                scale_y = in_stream.height / (inf_size * in_stream.height / in_stream.width)
-                
-                # 3. Dibujar y guardar cada frame del lote
-                for i in range(batch_size):
-                    img_draw = np.array(original_frames[i])
-                    
-                    # Dibujar Alcachofas
-                    for b in results_alc[i].boxes:
-                        x1, y1, x2, y2 = map(int, b.xyxy[0])
-                        lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
-                        cls = int(b.cls[0]); lbl = f"{'Flor' if cls==1 else 'Hojas'} {float(b.conf[0]):.2f}"
-                        cv2.rectangle(img_draw, (lx1, ly1), (lx2, ly2), (0,0,255), 3)
-                        cv2.putText(img_draw, lbl, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
-                    
-                    # Dibujar Extras
-                    for b in results_seg[i].boxes:
-                        x1, y1, x2, y2 = map(int, b.xyxy[0])
-                        lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
-                        lbl = f"{nombres_extra.get(int(b.cls[0]), 'Alerta')} {float(b.conf[0]):.2f}"
-                        cv2.rectangle(img_draw, (lx1, ly1), (lx2, ly2), (0,140,255), 3)
-                        cv2.putText(img_draw, lbl, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,140,255), 2)
-                    
-                    # Codificar frame
-                    new_frame = av.VideoFrame.from_image(Image.fromarray(img_draw))
-                    for packet in out_stream.encode(new_frame): output_container.mux(packet)
-                    
-                    count += 1
-                
-                # Limpiar buffers
-                frame_buffer = []
-                original_frames = []
-                
-                # Actualizar progreso
-                if total_frames > 0:
-                    pct = min(count / total_frames, 1.0)
-                    bar.progress(pct, text=f"Procesando en Lote (Alta Precisión): {int(pct*100)}% ({count}/{total_frames})")
-
-        # Procesar frames restantes si el total no es múltiplo del batch_size
-        if frame_buffer:
-            results_alc = modelo_alc(frame_buffer, imgsz=inf_size, conf=conf_val, iou=iou_val, verbose=False)
-            results_seg = modelo_seg(frame_buffer, imgsz=inf_size, conf=conf_val, classes=[0, 15, 16, 17, 18, 19, 39], verbose=False)
-            for i in range(len(frame_buffer)):
-                img_draw = np.array(original_frames[i])
-                for b in results_alc[i].boxes:
-                    x1, y1, x2, y2 = map(int, b.xyxy[0]); lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
-                    cv2.rectangle(img_draw, (lx1, ly1), (lx2, ly2), (0,0,255), 3)
-                for b in results_seg[i].boxes:
-                    x1, y1, x2, y2 = map(int, b.xyxy[0]); lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
-                    cv2.rectangle(img_draw, (lx1, ly1), (lx2, ly2), (0,140,255), 3)
-                new_frame = av.VideoFrame.from_image(Image.fromarray(img_draw))
-                for packet in out_stream.encode(new_frame): output_container.mux(packet)
+            count += 1
+            if total_frames > 0:
+                pct = min(count / total_frames, 1.0)
+                bar.progress(pct, text=f"Procesando: {int(pct*100)}% ({count}/{total_frames})")
         
-        # Finalizar codificación
         for packet in out_stream.encode():
             output_container.mux(packet)
         
         input_container.close()
         output_container.close()
-        bar.success("¡Video analizado y codificado correctamente!")
+        bar.success("¡Video analizado con éxito!")
         
     except Exception as e:
         st.error(f"Error procesando video: {str(e)}")
@@ -476,5 +410,4 @@ elif opcion == "💾 Videos Originales":
 
 elif opcion == "🎬 Videos Analizados":
     render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
-
 
