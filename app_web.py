@@ -155,40 +155,51 @@ def main_process(imagen_pil, save_to_disk=False):
     return res_pil, len(cp), len(detecciones_seg)
 
 # --- CALLBACK PARA VIDEO EN VIVO ---
+# Variables para control de frames
+last_frame_processed = {"img": None, "count": 0}
+
 def video_frame_callback(frame):
+    last_frame_processed["count"] += 1
+    
+    # Solo procesar 1 de cada 3 frames para evitar LAG y timeout en celular
+    if last_frame_processed["count"] % 3 != 0 and last_frame_processed["img"] is not None:
+        return av.VideoFrame.from_ndarray(last_frame_processed["img"], format="bgr24")
+
     img = frame.to_ndarray(format="bgr24")
     
-    # Redimensionar para velocidad si es necesario
-    img_h, img_w = img.shape[:2]
+    # Redimensionar para análisis ultra-rápido (320px)
+    h, w = img.shape[:2]
+    img_small = cv2.resize(img, (320, int(320 * h / w)))
+    img_rgb = cv2.cvtColor(img_small, cv2.COLOR_BGR2RGB)
     
-    # Procesar con YOLO (usamos confianza mayor para evitar ruido en vivo)
-    # Convertimos a PIL para usar la lógica compartida o procesamos directo
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    
-    # Detecciones rápidas (sin TTA ni CLAHE para mantener FPS)
-    res_a = modelo_alc(img_rgb, conf=0.3, iou=0.45, imgsz=640, verbose=False)
-    res_s = modelo_seg(img_rgb, conf=0.4, classes=[0, 15, 16, 17, 18, 19, 39], verbose=False)
+    # Detecciones rápidas con resolución mínima
+    res_a = modelo_alc(img_rgb, conf=0.35, iou=0.45, imgsz=320, verbose=False)
+    res_s = modelo_seg(img_rgb, conf=0.45, classes=[0, 15, 16, 17, 18, 19, 39], imgsz=320, verbose=False)
 
-    # Dibujar resultados (Simplificado para vivo)
-    # Alcachofa
+    # Reescalar coordenadas de vuelta a la imagen original
+    scale_x = w / 320
+    scale_y = h / (320 * h / w)
+
+    # Dibujar (Alcachofa)
     for r in res_a:
         for b in r.boxes:
             x1, y1, x2, y2 = map(int, b.xyxy[0])
-            cls = int(b.cls[0])
-            label = "Flor" if cls == 1 else "Hojas"
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.putText(img, f"{label}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+            lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
+            cls = int(b.cls[0]); label = "Flor" if cls == 1 else "Hojas"
+            cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 0, 255), 2)
+            cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
 
-    # Persona/Animales/Basura
+    # Dibujar (Extras)
     nombres_extra = {0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca", 39: "Basura"}
     for r in res_s:
         for b in r.boxes:
             x1, y1, x2, y2 = map(int, b.xyxy[0])
-            cls = int(b.cls[0])
-            label = nombres_extra.get(cls, "Alerta")
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 140, 255), 3)
-            cv2.putText(img, f"{label}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
+            lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
+            label = nombres_extra.get(int(b.cls[0]), "Alerta")
+            cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 140, 255), 2)
+            cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,140,255), 2)
 
+    last_frame_processed["img"] = img
     return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --- PROCESAMIENTO DE VIDEO ---
@@ -313,7 +324,14 @@ if opcion == "🚀 Identificador":
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=rtc_config,
             video_frame_callback=video_frame_callback,
-            media_stream_constraints={"video": True, "audio": False},
+            media_stream_constraints={
+                "video": {
+                    "width": {"ideal": 480}, 
+                    "height": {"ideal": 360},
+                    "facingMode": "environment" # Forzar cámara trasera en celular
+                }, 
+                "audio": False
+            },
             async_processing=True,
         )
 
