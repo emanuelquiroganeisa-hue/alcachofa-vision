@@ -336,7 +336,7 @@ if opcion == "🚀 Identificador":
                 "video": {
                     "width": {"ideal": 480}, 
                     "height": {"ideal": 360},
-                    "facingMode": "environment" # Forzar cámara trasera en celular
+                    "facingMode": {"exact": "environment"} # Forzar estrictamente la cámara trasera
                 }, 
                 "audio": False
             },
@@ -388,3 +388,4 @@ elif opcion == "💾 Videos Originales":
 
 elif opcion == "🎬 Videos Analizados":
     render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
+
