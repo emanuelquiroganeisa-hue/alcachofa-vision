@@ -75,6 +75,19 @@ with st.sidebar:
     st.divider()
     save_local = st.checkbox("💾 Guardar auto. en servidor", value=True)
 
+    st.divider()
+    st.subheader("🎨 Leyenda de Detección")
+    st.markdown("""
+    <div style='font-size:13px; line-height:1.9'>
+    🔴 <b>Hojas / Flor</b> (alcachofa)<br>
+    🟠 <b>Persona / Animal</b><br>
+    🟢 <b>Caneca</b> (contenedor)<br>
+    🔵 <b>Bulto</b> (mochila/maleta)<br>
+    🟣 <b>Rastrillo</b> (herramienta)<br>
+    🔴 <b>Ladrillo</b> (objeto sólido)
+    </div>
+    """, unsafe_allow_html=True)
+
 
 # ─────────────────────────────────────────────
 # LOGICA DE PROCESAMIENTO
@@ -110,8 +123,37 @@ def main_process(imagen_pil, save_to_disk=False):
     img_para_yolo = Image.fromarray(aplicar_clahe(img_rgb)) if use_clahe else imagen_pil
     
     res_a = modelo_alc(img_para_yolo, augment=use_tta, conf=conf_val, iou=iou_val, imgsz=800)
-    # Clases COCO: 0:Persona, 15:Gato, 16:Perro, 17:Caballo, 18:Oveja, 19:Vaca, 39:Botella(Basura)
-    nombres_extra = {0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca", 39: "Basura"}
+    # Clases COCO mapeadas al contexto de la plantación:
+    # Personas/Animales: 0=Persona, 15=Gato, 16=Perro, 17=Caballo, 18=Oveja, 19=Vaca
+    # Caneca: 39=Botella, 45=Bowl, 75=Vase  → recipientes/contenedores
+    # Bulto:  24=Backpack, 26=Handbag, 28=Suitcase  → objetos de carga
+    # Rastrillo: 34=Baseball bat, 38=Tennis racket  → herramientas/objetos alargados
+    # Ladrillo: 11=Fire hydrant, 56=Chair (objetos sólidos/rectangulares en campo)
+    nombres_extra = {
+        # Personas y animales
+        0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca",
+        # Canecas/Contenedores
+        39: "Caneca", 45: "Caneca", 75: "Caneca",
+        # Bultos
+        24: "Bulto", 26: "Bulto", 28: "Bulto",
+        # Rastrillos/Herramientas
+        34: "Rastrillo", 38: "Rastrillo",
+        # Ladrillos (objetos sólidos en campo)
+        11: "Ladrillo", 56: "Ladrillo",
+    }
+    # Colores BGR por categoría de detección
+    colores_extra = {
+        "Persona":   (0, 140, 255),   # naranja
+        "Gato":      (0, 140, 255),   # naranja
+        "Perro":     (0, 140, 255),   # naranja
+        "Caballo":   (0, 140, 255),   # naranja
+        "Oveja":     (0, 140, 255),   # naranja
+        "Vaca":      (0, 140, 255),   # naranja
+        "Caneca":    (0, 255, 200),   # cian/verde agua
+        "Bulto":     (255, 100, 0),   # azul oscuro
+        "Rastrillo": (180, 0, 255),   # magenta
+        "Ladrillo":  (0, 80, 255),    # rojo-naranja
+    }
     res_s = modelo_seg(img_para_yolo, conf=0.35, classes=list(nombres_extra.keys()))
 
     detecciones_seg = []
@@ -142,9 +184,10 @@ def main_process(imagen_pil, save_to_disk=False):
         cv2.rectangle(img_bgr, (int(c[1]), int(c[2])), (int(c[3]), int(c[4])), (0, 0, 255), 2)
         cv2.putText(img_bgr, f"{'Flor' if c[0]==1 else 'Hojas'} {c[5]:.2f}", (int(c[1]), max(int(c[2])-5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
     for s in detecciones_seg:
-        cv2.rectangle(img_bgr, (s[0], s[1]), (s[2], s[3]), (0, 140, 255), 3)
         label_extra = nombres_extra.get(s[4], "Alerta")
-        cv2.putText(img_bgr, f"{label_extra} {s[5]:.2f}", (s[0], max(s[1]-10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
+        color = colores_extra.get(label_extra, (0, 140, 255))
+        cv2.rectangle(img_bgr, (s[0], s[1]), (s[2], s[3]), color, 3)
+        cv2.putText(img_bgr, f"{label_extra} {s[5]:.2f}", (s[0], max(s[1]-10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
     res_pil = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
     
@@ -165,7 +208,8 @@ def run_inference_alc(img_rgb, size=384):
     with res_lock: shared_res["a"] = res
 
 def run_inference_seg(img_rgb, size=384):
-    res = modelo_seg(img_rgb, conf=0.5, classes=[0, 15, 16, 17, 18, 19, 39], imgsz=size, verbose=False)
+    # Clases: personas, animales, canecas (39,45,75), bultos (24,26,28), rastrillos (34,38), ladrillos (11,56)
+    res = modelo_seg(img_rgb, conf=0.4, classes=[0, 11, 15, 16, 17, 18, 19, 24, 26, 28, 34, 38, 39, 45, 56, 75], imgsz=size, verbose=False)
     with res_lock: shared_res["s"] = res
 
 def video_frame_callback(frame):
@@ -202,15 +246,28 @@ def video_frame_callback(frame):
                 cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 0, 255), 2)
                 cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
 
-        # Dibujar (Extras)
-        nombres_extra = {0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca", 39: "Basura"}
+        # Dibujar (Extras: personas, animales, canecas, bultos, rastrillos, ladrillos)
+        nombres_live = {
+            0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca",
+            39: "Caneca", 45: "Caneca", 75: "Caneca",
+            24: "Bulto",  26: "Bulto",  28: "Bulto",
+            34: "Rastrillo", 38: "Rastrillo",
+            11: "Ladrillo", 56: "Ladrillo",
+        }
+        colores_live = {
+            "Persona":   (0, 140, 255), "Gato": (0, 140, 255), "Perro": (0, 140, 255),
+            "Caballo":   (0, 140, 255), "Oveja": (0, 140, 255), "Vaca": (0, 140, 255),
+            "Caneca":    (0, 255, 200), "Bulto": (255, 100, 0),
+            "Rastrillo": (180, 0, 255), "Ladrillo": (0, 80, 255),
+        }
         for r in shared_res["s"]:
             for b in r.boxes:
                 x1, y1, x2, y2 = map(int, b.xyxy[0])
                 lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
-                label = nombres_extra.get(int(b.cls[0]), "Alerta")
-                cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 140, 255), 2)
-                cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,140,255), 2)
+                label = nombres_live.get(int(b.cls[0]), "Alerta")
+                color = colores_live.get(label, (0, 140, 255))
+                cv2.rectangle(img, (lx1, ly1), (lx2, ly2), color, 2)
+                cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
     last_frame_processed["img"] = img
     return av.VideoFrame.from_ndarray(img, format="bgr24")
