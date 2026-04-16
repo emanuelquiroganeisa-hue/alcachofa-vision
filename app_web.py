@@ -37,6 +37,18 @@ SAVE_PATH_VID_OUT = "videos_analizados"
 for path in [SAVE_PATH, SAVE_PATH_CAM, SAVE_PATH_VID, SAVE_PATH_VID_OUT]:
     if not os.path.exists(path): os.makedirs(path)
 
+# --- RUTAS DE MODELOS ---
+MODELO_CAMPO_PATH = "D:/Documentos/proyectogra/modelo_objetos_campo/weights/best.pt"
+# Clases del modelo custom de objetos de campo (IDs según orden de entrenamiento)
+# Orden: 0=botella, 1=bulto, 2=caneca, 3=ladrillo
+CLASES_CAMPO = {0: "Botella", 1: "Bulto", 2: "Caneca", 3: "Ladrillo"}
+COLORES_CAMPO = {
+    "Botella":  (0, 255, 200),   # cian
+    "Bulto":    (255, 120, 0),   # azul oscuro
+    "Caneca":   (0, 200, 255),   # amarillo-cian
+    "Ladrillo": (0, 80, 255),    # rojo oscuro
+}
+
 # --- CARGA DE MODELOS ---
 @st.cache_resource
 def load_models():
@@ -48,10 +60,22 @@ def load_models():
         with st.spinner("⬇️ Descargando modelo..."):
             ruta = hf_hub_download(repo_id=HF_REPO_ID, filename=HF_FILENAME, local_dir=".")
             m_alc = YOLO(ruta)
-    m_seg = YOLO("yolov8n.pt")
-    return m_alc, m_seg
 
-modelo_alc, modelo_seg = load_models()
+    # Intentar cargar modelo personalizado de objetos de campo
+    m_campo = None
+    if os.path.exists(MODELO_CAMPO_PATH):
+        try:
+            m_campo = YOLO(MODELO_CAMPO_PATH)
+            print("✅ Modelo de objetos de campo cargado.")
+        except Exception as e:
+            print(f"⚠️ No se pudo cargar modelo de campo: {e}")
+
+    # Modelo base COCO como fallback para personas/animales
+    m_seg = YOLO("yolov8n.pt")
+    return m_alc, m_seg, m_campo
+
+modelo_alc, modelo_seg, modelo_campo = load_models()
+
 
 # --- MENÚ DE NAVEGACIÓN ---
 with st.sidebar:
@@ -154,13 +178,36 @@ def main_process(imagen_pil, save_to_disk=False):
         "Rastrillo": (180, 0, 255),   # magenta
         "Ladrillo":  (0, 80, 255),    # rojo-naranja
     }
-    res_s = modelo_seg(img_para_yolo, conf=0.35, classes=list(nombres_extra.keys()))
+    # --- Detección con modelo COCO (personas/animales) ---
+    # Solo usamos COCO para personas y animales (son clases que sí detecta bien)
+    nombres_personas = {0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca"}
+    res_s = modelo_seg(img_para_yolo, conf=0.35, classes=list(nombres_personas.keys()))
 
     detecciones_seg = []
     for r in res_s:
         for b in r.boxes:
             x1, y1, x2, y2 = map(int, b.xyxy[0])
-            detecciones_seg.append([x1, y1, x2, y2, int(b.cls[0]), float(b.conf[0])])
+            detecciones_seg.append([x1, y1, x2, y2, int(b.cls[0]), float(b.conf[0]), "coco"])
+
+    # --- Detección con modelo personalizado de objetos de campo ---
+    detecciones_campo = []
+    if modelo_campo is not None:
+        res_c = modelo_campo(img_para_yolo, conf=conf_val, iou=iou_val, imgsz=800)
+        for r in res_c:
+            for b in r.boxes:
+                x1, y1, x2, y2 = map(int, b.xyxy[0])
+                detecciones_campo.append([x1, y1, x2, y2, int(b.cls[0]), float(b.conf[0])])
+    else:
+        # Fallback: usar COCO con mapeo aproximado si no hay modelo campo
+        nombres_extra_fb = {39: "Caneca", 45: "Caneca", 75: "Caneca",
+                            24: "Bulto", 26: "Bulto", 28: "Bulto",
+                            34: "Rastrillo", 38: "Rastrillo",
+                            11: "Ladrillo", 56: "Ladrillo"}
+        res_fb = modelo_seg(img_para_yolo, conf=0.25, classes=list(nombres_extra_fb.keys()))
+        for r in res_fb:
+            for b in r.boxes:
+                x1, y1, x2, y2 = map(int, b.xyxy[0])
+                detecciones_seg.append([x1, y1, x2, y2, int(b.cls[0]), float(b.conf[0]), "fb"])
 
     cajas_p = {}
     for r in res_a:
@@ -174,6 +221,7 @@ def main_process(imagen_pil, save_to_disk=False):
     mask = np.ones(img_d.shape[:2], dtype=np.uint8) * 255
     for c in cp: cv2.rectangle(mask, (int(c[1]), int(c[2])), (int(c[3]), int(c[4])), 0, -1)
     for s in detecciones_seg: cv2.rectangle(mask, (s[0], s[1]), (s[2], s[3]), 0, -1)
+    for s in detecciones_campo: cv2.rectangle(mask, (s[0], s[1]), (s[2], s[3]), 0, -1)
 
     capa_a = np.zeros_like(img_d); capa_a[:] = (0, 0, 255)
     img_t = np.clip(img_d * 0.6 + capa_a * 0.4, 0, 255).astype(np.uint8)
@@ -183,11 +231,28 @@ def main_process(imagen_pil, save_to_disk=False):
     for c in cp:
         cv2.rectangle(img_bgr, (int(c[1]), int(c[2])), (int(c[3]), int(c[4])), (0, 0, 255), 2)
         cv2.putText(img_bgr, f"{'Flor' if c[0]==1 else 'Hojas'} {c[5]:.2f}", (int(c[1]), max(int(c[2])-5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+
+    # Dibujar personas/animales (COCO)
     for s in detecciones_seg:
-        label_extra = nombres_extra.get(s[4], "Alerta")
+        fuente = s[6] if len(s) > 6 else "coco"
+        if fuente == "coco":
+            label_extra = nombres_personas.get(s[4], "Alerta")
+        else:
+            nombres_fb = {39: "Caneca", 45: "Caneca", 75: "Caneca",
+                          24: "Bulto", 26: "Bulto", 28: "Bulto",
+                          34: "Rastrillo", 38: "Rastrillo",
+                          11: "Ladrillo", 56: "Ladrillo"}
+            label_extra = nombres_fb.get(s[4], "Alerta")
         color = colores_extra.get(label_extra, (0, 140, 255))
         cv2.rectangle(img_bgr, (s[0], s[1]), (s[2], s[3]), color, 3)
         cv2.putText(img_bgr, f"{label_extra} {s[5]:.2f}", (s[0], max(s[1]-10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+    # Dibujar objetos de campo (modelo personalizado)
+    for s in detecciones_campo:
+        label_campo = CLASES_CAMPO.get(s[4], "Objeto")
+        color = COLORES_CAMPO.get(label_campo, (0, 255, 255))
+        cv2.rectangle(img_bgr, (s[0], s[1]), (s[2], s[3]), color, 3)
+        cv2.putText(img_bgr, f"{label_campo} {s[5]:.2f}", (s[0], max(s[1]-10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
     res_pil = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
     
@@ -196,21 +261,28 @@ def main_process(imagen_pil, save_to_disk=False):
         res_pil.save(f"{SAVE_PATH}/detec_{ts}.jpg", quality=95)
         
         
-    return res_pil, len(cp), len(detecciones_seg)
+    return res_pil, len(cp), len(detecciones_seg) + len(detecciones_campo)
 
 # --- CALLBACK PARA VIDEO EN VIVO ---
 last_frame_processed = {"img": None, "count": 0}
 res_lock = threading.Lock()
-shared_res = {"a": [], "s": []}
+shared_res = {"a": [], "s": [], "c": []}  # a=alcachofa, s=seg/personas, c=campo
 
 def run_inference_alc(img_rgb, size=384):
     res = modelo_alc(img_rgb, conf=0.35, iou=0.45, imgsz=size, verbose=False)
     with res_lock: shared_res["a"] = res
 
 def run_inference_seg(img_rgb, size=384):
-    # Clases: personas, animales, canecas (39,45,75), bultos (24,26,28), rastrillos (34,38), ladrillos (11,56)
-    res = modelo_seg(img_rgb, conf=0.4, classes=[0, 11, 15, 16, 17, 18, 19, 24, 26, 28, 34, 38, 39, 45, 56, 75], imgsz=size, verbose=False)
+    # Solo personas y animales desde COCO
+    res = modelo_seg(img_rgb, conf=0.4, classes=[0, 15, 16, 17, 18, 19], imgsz=size, verbose=False)
     with res_lock: shared_res["s"] = res
+
+def run_inference_campo(img_rgb, size=384):
+    """Usa el modelo personalizado de campo (botella, rastrillo, bulto, caneca, ladrillo)."""
+    if modelo_campo is None:
+        return
+    res = modelo_campo(img_rgb, conf=0.35, imgsz=size, verbose=False)
+    with res_lock: shared_res["c"] = res
 
 def video_frame_callback(frame):
     last_frame_processed["count"] += 1
@@ -226,11 +298,12 @@ def video_frame_callback(frame):
         img_small = cv2.resize(img, (384, int(384 * h / w)))
         img_rgb = cv2.cvtColor(img_small, cv2.COLOR_BGR2RGB)
         
-        # Ejecutamos ambos modelos en PARALELO para ganar velocidad
+        # Ejecutamos los 3 modelos en PARALELO
         t1 = threading.Thread(target=run_inference_alc, args=(img_rgb,))
         t2 = threading.Thread(target=run_inference_seg, args=(img_rgb,))
-        t1.start(); t2.start()
-        t1.join(); t2.join()
+        t3 = threading.Thread(target=run_inference_campo, args=(img_rgb,))
+        t1.start(); t2.start(); t3.start()
+        t1.join(); t2.join(); t3.join()
 
     # Reescalar coordenadas
     scale_x = w / 384
@@ -246,28 +319,25 @@ def video_frame_callback(frame):
                 cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 0, 255), 2)
                 cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
 
-        # Dibujar (Extras: personas, animales, canecas, bultos, rastrillos, ladrillos)
-        nombres_live = {
-            0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca",
-            39: "Caneca", 45: "Caneca", 75: "Caneca",
-            24: "Bulto",  26: "Bulto",  28: "Bulto",
-            34: "Rastrillo", 38: "Rastrillo",
-            11: "Ladrillo", 56: "Ladrillo",
-        }
-        colores_live = {
-            "Persona":   (0, 140, 255), "Gato": (0, 140, 255), "Perro": (0, 140, 255),
-            "Caballo":   (0, 140, 255), "Oveja": (0, 140, 255), "Vaca": (0, 140, 255),
-            "Caneca":    (0, 255, 200), "Bulto": (255, 100, 0),
-            "Rastrillo": (180, 0, 255), "Ladrillo": (0, 80, 255),
-        }
+        # Dibujar (Extras: personas y animales desde COCO)
+        nombres_personas_live = {0: "Persona", 15: "Gato", 16: "Perro", 17: "Caballo", 18: "Oveja", 19: "Vaca"}
         for r in shared_res["s"]:
             for b in r.boxes:
                 x1, y1, x2, y2 = map(int, b.xyxy[0])
                 lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
-                label = nombres_live.get(int(b.cls[0]), "Alerta")
-                color = colores_live.get(label, (0, 140, 255))
-                cv2.rectangle(img, (lx1, ly1), (lx2, ly2), color, 2)
-                cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                label = nombres_personas_live.get(int(b.cls[0]), "Persona")
+                cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 140, 255), 2)
+                cv2.putText(img, label, (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 140, 255), 2)
+
+        # Dibujar (Objetos de campo: botella, rastrillo, bulto, caneca, ladrillo)
+        for r in shared_res["c"]:
+            for b in r.boxes:
+                x1, y1, x2, y2 = map(int, b.xyxy[0])
+                lx1, ly1, lx2, ly2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
+                label_c = CLASES_CAMPO.get(int(b.cls[0]), "Objeto")
+                color_c = COLORES_CAMPO.get(label_c, (0, 255, 255))
+                cv2.rectangle(img, (lx1, ly1), (lx2, ly2), color_c, 2)
+                cv2.putText(img, f"{label_c} {float(b.conf[0]):.2f}", (lx1, ly1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_c, 2)
 
     last_frame_processed["img"] = img
     return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -467,4 +537,5 @@ elif opcion == "💾 Videos Originales":
 
 elif opcion == "🎬 Videos Analizados":
     render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
+
 
