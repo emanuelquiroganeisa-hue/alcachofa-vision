@@ -240,22 +240,25 @@ def process_video(in_path, out_path):
         out_stream.height = in_stream.height
         out_stream.pix_fmt = 'yuv420p'
 
-        bar = st.progress(0, text="🚀 Modo Dron: analizando 1 de cada 10 frames...")
+        bar = st.progress(0, text="🚀 Optimizando: Analizando 1 de cada 10 frames (19s duración)...")
         count = 0
-
+        last_res_pil = None
+        
         for frame in input_container.decode(video=0):
-            # Saltar frames: solo analizamos 1 de cada SKIP_FRAMES_VIDEO
-            if count % SKIP_FRAMES_VIDEO != 0:
-                count += 1
-                continue
-
-            img_pil = frame.to_image()
-            res_pil, _, _ = main_process(img_pil, save_to_disk=False)
-
-            new_frame = av.VideoFrame.from_image(res_pil)
-            for packet in out_stream.encode(new_frame):
-                output_container.mux(packet)
-
+            # Solo analizamos 1 de cada 10, pero escribimos TODOS al video final
+            if count % SKIP_FRAMES_VIDEO == 0:
+                img_pil = frame.to_image()
+                res_pil, _, _ = main_process(img_pil, save_to_disk=False)
+                last_res_pil = res_pil
+            else:
+                # Reusamos el último frame analizado para mantener la duración del video
+                res_pil = last_res_pil
+            
+            if res_pil:
+                new_frame = av.VideoFrame.from_image(res_pil)
+                for packet in out_stream.encode(new_frame):
+                    output_container.mux(packet)
+            
             count += 1
             if total_frames > 0:
                 pct = min(count / total_frames, 1.0)
@@ -413,5 +416,4 @@ elif opcion == "💾 Videos Originales":
 
 elif opcion == "🎬 Videos Analizados":
     render_historial(SAVE_PATH_VID_OUT, "🎬 Galería de Videos Procesados", is_video=True)
-
 
